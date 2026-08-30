@@ -17,12 +17,13 @@ https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/pluginmaster.json
 
 ## 历史版本
 
-当前为 **1.5.5**。
+当前为 **1.6.0**。
 
+- 1.5.5：https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/archive/OccultPot-v1.5.5.zip
 - 1.5.0：https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/archive/OccultPot-v1.5.0.zip
 - 1.4.0：https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/archive/OccultPot-v1.4.0.zip
 
-回退：把对应 zip 覆盖 `plugins/OccultPot/latest.zip`，`pluginmaster.json` 的 `AssemblyVersion` 改回该版本（如 `1.5.0.0`），并更新 `LastUpdate`。
+回退：把对应 zip 覆盖 `plugins/OccultPot/latest.zip`，`pluginmaster.json` 的 `AssemblyVersion` 改回该版本（如 `1.5.5.0`），并更新 `LastUpdate`。
 
 ## 依赖
 
