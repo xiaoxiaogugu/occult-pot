@@ -1,0 +1,18 @@
+[
+  {
+    "Author": "GUGU",
+    "Name": "新月岛撒娇罐",
+    "Punchline": "多区循环找罐、打罐、挖箱",
+    "Description": "按勾选大区循环，每区北岛再南岛。打完或没中就退岛换下一处，原生服务器目的地锁定。",
+    "InternalName": "OccultPot",
+    "AssemblyVersion": "1.0.0.0",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "LastUpdate": "1788088794",
+    "Tags": ["occult", "crescent", "utility"],
+    "IsHide": false,
+    "RepoUrl": "https://github.com/xiaoxiaogugu/occult-pot",
+    "DownloadLinkInstall": "https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/latest.zip",
+    "DownloadLinkUpdate": "https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/latest.zip"
+  }
+]
