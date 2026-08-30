@@ -15,9 +15,17 @@ https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/pluginmaster.json
 
 命令：`/ocpot`，`/ocpot start` / `stop` / `next` / `dig`
 
+## 历史版本
+
+当前为 **1.3.0**。1.2.0 留档：
+
+https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/archive/OccultPot-v1.2.0.zip
+
+回退到 1.2：把该文件覆盖 `plugins/OccultPot/latest.zip`，`pluginmaster.json` 的 `AssemblyVersion` 改回 `1.2.0.0`，并更新 `LastUpdate`。
+
 ## 依赖
 
-需要 Daily Routines（进岛、跨界、退本、小水晶）、vnavmesh、BOCCHI，以及挖箱用的坐标传送。
+需要 Daily Routines（进岛、跨界、退本、小水晶）、vnavmesh、BOCCHI。挖箱默认坐标传送，可勾选绿玩挖箱改用 vnav。
 
 ## 免责声明
 
