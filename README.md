@@ -15,16 +15,6 @@ https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/pluginmaster.json
 
 命令：`/ocpot`，`/ocpot start` / `stop` / `next` / `dig`
 
-## 历史版本
-
-当前为 **1.6.1**。
-
-- 1.6.0：https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/archive/OccultPot-v1.6.0.zip
-- 1.5.5：https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/archive/OccultPot-v1.5.5.zip
-- 1.5.0：https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/archive/OccultPot-v1.5.0.zip
-
-回退：把对应 zip 覆盖 `plugins/OccultPot/latest.zip`，`pluginmaster.json` 的 `AssemblyVersion` 改回该版本（如 `1.6.0.0`），并更新 `LastUpdate`。
-
 ## 依赖
 
 需要 Daily Routines（进岛、跨界、退本、小水晶）、vnavmesh 与自动战斗。绿玩挖箱用 vnav；取消则用 xsz 潜水 TP。
