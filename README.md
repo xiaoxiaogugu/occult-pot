@@ -17,16 +17,16 @@ https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/pluginmaster.json
 
 ## 历史版本
 
-当前为 **1.5.0**。
+当前为 **1.5.5**。
 
+- 1.5.0：https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/archive/OccultPot-v1.5.0.zip
 - 1.4.0：https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/archive/OccultPot-v1.4.0.zip
-- 1.3.0：https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/plugins/OccultPot/archive/OccultPot-v1.3.0.zip
 
-回退：把对应 zip 覆盖 `plugins/OccultPot/latest.zip`，`pluginmaster.json` 的 `AssemblyVersion` 改回该版本（如 `1.4.0.0`），并更新 `LastUpdate`。
+回退：把对应 zip 覆盖 `plugins/OccultPot/latest.zip`，`pluginmaster.json` 的 `AssemblyVersion` 改回该版本（如 `1.5.0.0`），并更新 `LastUpdate`。
 
 ## 依赖
 
-需要 Daily Routines（进岛、跨界、退本、小水晶）、vnavmesh 与自动战斗。挖箱默认坐标传送，可勾选绿玩挖箱改用 vnav。
+需要 Daily Routines（进岛、跨界、退本、小水晶）、vnavmesh 与自动战斗。绿玩挖箱用 vnav；取消则用 xsz 潜水 TP。
 
 ## 免责声明
 
