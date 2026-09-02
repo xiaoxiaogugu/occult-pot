@@ -13,7 +13,7 @@ https://raw.githubusercontent.com/xiaoxiaogugu/occult-pot/main/pluginmaster.json
 
 3. `/xlplugins` → 搜索「新月岛撒娇罐」→ 安装
 
-命令：`/ocpot`，`/ocpot start` / `stop` / `next` / `dig`
+命令：`/ocpot`，`/ocpot start` / `stop` / `skip` / `dig`
 
 ## 依赖
 

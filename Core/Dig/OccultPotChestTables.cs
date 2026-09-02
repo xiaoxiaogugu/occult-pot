@@ -1,0 +1,218 @@
+using System;
+using System.Collections.Generic;
+using System.Numerics;
+using OccultPot.Models;
+
+namespace OccultPot.Core.Dig;
+
+internal static class OccultPotChestTables
+{
+	private const int KindCount = 30;
+
+	private const int RerollCount = 20;
+
+	private const int FullCount = 80;
+
+	internal static readonly Vector3[] SouthHorn = new Vector3[80]
+	{
+		new Vector3(571.5841f, 51.451305f, -813.1642f),
+		new Vector3(662.4388f, 120f, 161.1339f),
+		new Vector3(606.4641f, 108.07402f, 184.8517f),
+		new Vector3(-312.2778f, 103.19944f, -35.25348f),
+		new Vector3(587.7039f, 78.8956f, -545.8168f),
+		new Vector3(891.2597f, 120f, -20.672f),
+		new Vector3(878.1131f, 108.28959f, -91.1057f),
+		new Vector3(803.6609f, 95.99998f, -354.1809f),
+		new Vector3(341.4413f, 95.99999f, 194.7507f),
+		new Vector3(570.2421f, 64.66201f, 272.1734f),
+		new Vector3(-216.372f, 5.4469404f, -510.1361f),
+		new Vector3(684.4223f, 96.10129f, -165.4811f),
+		new Vector3(-188.1745f, 2.999999f, -717.2005f),
+		new Vector3(-476.3011f, 101.44228f, -86.69939f),
+		new Vector3(80.19762f, 101.27949f, 391.2263f),
+		new Vector3(-534.6993f, 2.999998f, -651.6244f),
+		new Vector3(-165.2374f, 95.33837f, 437.4505f),
+		new Vector3(330.8659f, 6.7168036f, -654.5339f),
+		new Vector3(-333.3444f, 2.9999998f, -861.1722f),
+		new Vector3(-313.2906f, 108.10962f, 70.76207f),
+		new Vector3(-459.1735f, 93.57443f, 5.054043f),
+		new Vector3(-54.69518f, 99.40573f, 405.0261f),
+		new Vector3(-382.4396f, 109.30187f, -378.3482f),
+		new Vector3(263.2559f, 100.38499f, 326.6834f),
+		new Vector3(224.7233f, 68.7328f, 518.668f),
+		new Vector3(19.73968f, 26.045855f, -420.977f),
+		new Vector3(705.2716f, 68.143616f, 358.6714f),
+		new Vector3(-660.5336f, 98f, -216.7666f),
+		new Vector3(-324.2736f, 121f, 203.2017f),
+		new Vector3(-386.5904f, -0.13994062f, -461.0976f),
+		new Vector3(-195.4419f, 110.15342f, -287.8911f),
+		new Vector3(74.73397f, 110.494316f, -394.1289f),
+		new Vector3(-386.437f, 98.60658f, -221.7847f),
+		new Vector3(-554.6146f, 99.01769f, -309.1231f),
+		new Vector3(107.0611f, 105.699875f, 146.7059f),
+		new Vector3(825.9521f, 70f, 772.4054f),
+		new Vector3(-836.7586f, 106.999985f, 597.2944f),
+		new Vector3(67.45271f, 69.477974f, 745.8658f),
+		new Vector3(69.70596f, 111.56108f, -239.064f),
+		new Vector3(301.8741f, 103.784424f, 70.59854f),
+		new Vector3(-38.97946f, 102.073296f, -175.4589f),
+		new Vector3(-60.72729f, 69.687035f, 828.4997f),
+		new Vector3(17.60418f, 65.93209f, 674.6207f),
+		new Vector3(393.2685f, 57.545956f, 844.6924f),
+		new Vector3(393.0191f, 104f, -124.1651f),
+		new Vector3(-798.7886f, 84.22545f, -4.822005f),
+		new Vector3(440.8355f, 70.3f, 876.4097f),
+		new Vector3(-734.1434f, 170.99998f, 683.7238f),
+		new Vector3(423.3505f, 70.3f, 578.9013f),
+		new Vector3(200.1241f, 56f, 624.2285f),
+		new Vector3(-603.3457f, 139f, 858.6771f),
+		new Vector3(-829.598f, 62.66814f, 66.82948f),
+		new Vector3(-645.3027f, 135.69208f, -73.54771f),
+		new Vector3(-836.1612f, 107f, 770.2822f),
+		new Vector3(-676.6202f, 128.57442f, 1.531581f),
+		new Vector3(-713.6796f, 203f, 710.08f),
+		new Vector3(781.2514f, 70f, 560.0701f),
+		new Vector3(-746.1318f, 172.00023f, 828.8809f),
+		new Vector3(-730.5441f, 107.694275f, -371.4776f),
+		new Vector3(-810.8279f, 114.053925f, -226.8324f),
+		new Vector3(-676.4631f, 5f, -769.7955f),
+		new Vector3(-823.9183f, 140.00032f, 677.6934f),
+		new Vector3(-886.4718f, 107f, 712.4964f),
+		new Vector3(-625.7809f, 171f, 810.8691f),
+		new Vector3(-813.9943f, 5f, -663.3634f),
+		new Vector3(-842.8967f, 75.76903f, -125.0559f),
+		new Vector3(-680.0345f, 201f, 739.9117f),
+		new Vector3(-793.0552f, 5f, -777.3126f),
+		new Vector3(-708.6777f, 171f, 669.5714f),
+		new Vector3(-718.0424f, 5f, -633.8791f),
+		new Vector3(-868.8489f, 67.5054f, -59.44909f),
+		new Vector3(-803.5182f, 3f, -602.7497f),
+		new Vector3(-732.2048f, 139f, 828.8491f),
+		new Vector3(-659.1158f, 12.198493f, -508.7968f),
+		new Vector3(-785.997f, 162.39513f, 790.5948f),
+		new Vector3(-840.8771f, 107.26465f, -250.273f),
+		new Vector3(-708.687f, 141.16982f, -139.3283f),
+		new Vector3(-796.66f, 114.15647f, -228.9318f),
+		new Vector3(-776.6315f, 5f, -486.978f),
+		new Vector3(-758.8058f, 127.66496f, -183.164f)
+	};
+
+	internal static readonly Vector3[] NorthHorn = new Vector3[80]
+	{
+		new Vector3(927.0178f, 54f, -155.2175f),
+		new Vector3(929.4178f, 54f, -1.817501f),
+		new Vector3(939.2178f, 80.269966f, -273.1175f),
+		new Vector3(912.2978f, 61.18964f, -461.5099f),
+		new Vector3(385f, 33f, -177f),
+		new Vector3(-536.1014f, 87.01824f, 149.8447f),
+		new Vector3(830.0979f, 77.75924f, -148.9099f),
+		new Vector3(-530f, 67.77658f, -58f),
+		new Vector3(-251.781f, 65.949005f, -864.3828f),
+		new Vector3(889.2178f, 53.999996f, 155.9825f),
+		new Vector3(-596f, 41.869873f, -285f),
+		new Vector3(-223.8233f, 10.891144f, -353.9438f),
+		new Vector3(-190f, 61.75258f, -763f),
+		new Vector3(-498.7f, 11.051006f, 128.9f),
+		new Vector3(-86f, 60.596237f, -737f),
+		new Vector3(32.4f, 56.835186f, -777.3f),
+		new Vector3(948.5978f, 63.594563f, -567.0099f),
+		new Vector3(-252.1626f, 66.55432f, -879.5855f),
+		new Vector3(546.56f, 36.120197f, 143.3104f),
+		new Vector3(321.198f, 59.85f, -889.8872f),
+		new Vector3(928.8978f, 74.0003f, -332.8099f),
+		new Vector3(593f, 39.622505f, 34f),
+		new Vector3(782.4979f, 70.34123f, -56.4099f),
+		new Vector3(810.8979f, 78.39757f, -278.8099f),
+		new Vector3(1.768392f, 71.555756f, -872.2798f),
+		new Vector3(440.298f, 60.615795f, -926.5872f),
+		new Vector3(452.6f, 57.10005f, -310.3f),
+		new Vector3(151.9998f, 61.106945f, -842.0175f),
+		new Vector3(714.698f, 69.24771f, 262.6901f),
+		new Vector3(-455.989f, 39.688915f, -365.5418f),
+		new Vector3(-113.4943f, 5.0879984f, -74.15943f),
+		new Vector3(-960f, 48f, -425.8f),
+		new Vector3(-834f, 18.913685f, -587.4f),
+		new Vector3(-853.493f, 58f, -323.8983f),
+		new Vector3(-586.3f, 47.81013f, -715.2f),
+		new Vector3(71.10001f, 81.074875f, 942.3f),
+		new Vector3(93.4f, 3.7155468f, -114.3f),
+		new Vector3(210f, 98.400055f, 916f),
+		new Vector3(28.10088f, 3.9999995f, -16.69861f),
+		new Vector3(0.9425046f, 41.80327f, 623.2599f),
+		new Vector3(-628.4385f, 49.07533f, -449.5009f),
+		new Vector3(11.98766f, 68.15505f, 795.707f),
+		new Vector3(-339.8588f, 85.47024f, 861.5197f),
+		new Vector3(-88.43135f, 2.400001f, 4.891054f),
+		new Vector3(-127f, 71.47446f, 808.4f),
+		new Vector3(-184.5137f, 71.1816f, 667.8036f),
+		new Vector3(52f, 25.316154f, 552f),
+		new Vector3(-109.5452f, 8.047999f, -210.1855f),
+		new Vector3(194.2296f, -0.3000001f, 352.9844f),
+		new Vector3(-330f, 42f, -628f),
+		new Vector3(190.3622f, 3.880325f, -204.7095f),
+		new Vector3(237.9156f, -0.29999995f, 309.4334f),
+		new Vector3(-512f, 41.999996f, -389f),
+		new Vector3(-975.4507f, 17.57744f, -526.2878f),
+		new Vector3(47.6f, 3.8843424f, -218.3f),
+		new Vector3(-269.6122f, 107.93719f, 875.6997f),
+		new Vector3(-15.89468f, 4.0000005f, -20.29277f),
+		new Vector3(-747.4032f, 28.970308f, -492.1095f),
+		new Vector3(-259.6f, 3.6823246f, 56.9f),
+		new Vector3(-172.6f, 6.0019975f, 103.2f),
+		new Vector3(782.8808f, 60.390976f, -611.7695f),
+		new Vector3(925.6533f, 70.21527f, -906.2195f),
+		new Vector3(909f, 97.05797f, -961.8f),
+		new Vector3(-661f, 160f, 937f),
+		new Vector3(-527f, 160.1012f, 834f),
+		new Vector3(-631.9453f, 160f, 808.8979f),
+		new Vector3(-809f, 6.3495464f, -879f),
+		new Vector3(671.2f, 60.99496f, -550.1f),
+		new Vector3(701f, 59.999992f, -945f),
+		new Vector3(-623f, 160f, 883f),
+		new Vector3(-585f, 160f, 842f),
+		new Vector3(-656.9f, 23.036425f, -799.3f),
+		new Vector3(-839.9977f, 160f, 740f),
+		new Vector3(-487.8f, 48.000015f, -953.2f),
+		new Vector3(-603f, 32f, -869f),
+		new Vector3(-637.2283f, 32f, -950.4841f),
+		new Vector3(-866f, -41.01304f, -775f),
+		new Vector3(626.3f, 61.119125f, -844.9f),
+		new Vector3(943.4631f, 70.21487f, -879.5159f),
+		new Vector3(-449.6f, 45.6567f, -967.0001f)
+	};
+
+	internal static IReadOnlyList<Vector3> GetAll(uint territoryID)
+	{
+		return territoryID switch
+		{
+			1252u => SouthHorn, 
+			1346u => NorthHorn, 
+			_ => Array.Empty<Vector3>(), 
+		};
+	}
+
+	internal static IReadOnlyList<Vector3> GetPositions(uint territoryID, PotKind? kind = null, bool rerollOnly = false)
+	{
+		IReadOnlyList<Vector3> all = GetAll(territoryID);
+		if (all.Count < 80 || !kind.HasValue)
+		{
+			return all;
+		}
+		if (rerollOnly)
+		{
+			return Slice(all, 60, 20);
+		}
+		int start = ((kind != PotKind.North) ? 30 : 0);
+		return Slice(all, start, 30);
+	}
+
+	private static Vector3[] Slice(IReadOnlyList<Vector3> all, int start, int count)
+	{
+		Vector3[] array = new Vector3[count];
+		for (int i = 0; i < count; i++)
+		{
+			array[i] = all[start + i];
+		}
+		return array;
+	}
+}

@@ -1,2 +1,11 @@
-﻿dist/
-
+bin/
+obj/
+dist/
+.vs/
+*.user
+*.suo
+OccultPot.local.json
+OccultPot.installed.json
+重构分析报告.md
+*.zip
+!plugins/OccultPot/latest.zip

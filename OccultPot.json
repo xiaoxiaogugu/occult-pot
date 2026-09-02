@@ -1,0 +1,11 @@
+{
+  "Author": "GUGU",
+  "Name": "新月岛撒娇罐",
+  "Punchline": "多区循环找罐、打罐、挖箱",
+  "Description": "国服新月岛多区循环：找罐、打罐、挖箱。\n\n按勾选大区跨服进岛，依据四区在线刷新规划路线；支持职业切换、FATE 组队与两种挖罐模式。命令：/ocpot",
+  "InternalName": "OccultPot",
+  "AssemblyVersion": "2.0.3.0",
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 15,
+  "Tags": [ "occult", "crescent", "utility" ]
+}

@@ -1,0 +1,57 @@
+<Project Sdk="Dalamud.CN.NET.Sdk/15.0.0">
+
+  <PropertyGroup>
+    <AssemblyName>OccultPot</AssemblyName>
+    <RootNamespace>OccultPot</RootNamespace>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Version>2.0.3</Version>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <DalamudApiLevel>15</DalamudApiLevel>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OmenTools\OmenTools.csproj" />
+    <ProjectReference Include="..\DailyRoutines.CodeAnalysis\DailyRoutines.CodeAnalysis.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <DALAMUD_HOME Condition="'$(DALAMUD_HOME)' == '' And '$(APPDATA)' != ''">$(APPDATA)\XIVLauncherCN\addon\Hooks\dev\</DALAMUD_HOME>
+    <DistDir>$(MSBuildProjectDirectory)\dist\OccultPot\</DistDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="OccultPot.json" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Localization\zh-CN.json" />
+  </ItemGroup>
+
+  <Target Name="CopyDist" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <PropertyGroup>
+      <OmenToolsOut>$(MSBuildThisFileDirectory)..\OmenTools\bin\$(Configuration)\</OmenToolsOut>
+      <LocalTestDir>$(MSBuildProjectDirectory)\..\OccultPot-refactor-out\</LocalTestDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(DistDir)" />
+    <MakeDir Directories="$(LocalTestDir)" />
+    <Copy SourceFiles="$(OutputPath)OccultPot.dll" DestinationFolder="$(DistDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutputPath)OccultPot.json" DestinationFolder="$(DistDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutputPath)OccultPot.dll" DestinationFolder="$(LocalTestDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutputPath)OccultPot.json" DestinationFolder="$(LocalTestDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutputPath)OmenTools.dll" DestinationFolder="$(DistDir)" SkipUnchangedFiles="true"
+          Condition="Exists('$(OutputPath)OmenTools.dll')" />
+    <Copy SourceFiles="$(OutputPath)OmenTools.dll" DestinationFolder="$(LocalTestDir)" SkipUnchangedFiles="true"
+          Condition="Exists('$(OutputPath)OmenTools.dll')" />
+    <Copy SourceFiles="$(OmenToolsOut)GuerrillaNtp.dll" DestinationFolder="$(DistDir)" SkipUnchangedFiles="true"
+          Condition="Exists('$(OmenToolsOut)GuerrillaNtp.dll')" />
+    <Copy SourceFiles="$(OmenToolsOut)GuerrillaNtp.dll" DestinationFolder="$(LocalTestDir)" SkipUnchangedFiles="true"
+          Condition="Exists('$(OmenToolsOut)GuerrillaNtp.dll')" />
+    <Copy SourceFiles="$(OmenToolsOut)TinyPinyin.dll" DestinationFolder="$(DistDir)" SkipUnchangedFiles="true"
+          Condition="Exists('$(OmenToolsOut)TinyPinyin.dll')" />
+    <Copy SourceFiles="$(OmenToolsOut)TinyPinyin.dll" DestinationFolder="$(LocalTestDir)" SkipUnchangedFiles="true"
+          Condition="Exists('$(OmenToolsOut)TinyPinyin.dll')" />
+  </Target>
+
+</Project>
