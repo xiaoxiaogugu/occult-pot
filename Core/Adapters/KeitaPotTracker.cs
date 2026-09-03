@@ -14,6 +14,7 @@ using OccultPot.Core.Data;
 using OccultPot.Core.Game;
 using OccultPot.Models;
 using OmenTools;
+using OmenTools.Dalamud;
 using OmenTools.OmenService;
 
 namespace OccultPot.Core.Adapters;
@@ -629,8 +630,9 @@ internal sealed class KeitaPotTracker
 				missingTrackerChecks = 0;
 			}
 		}
-		catch
+		catch (Exception ex)
 		{
+			DLog.Error("[规划] 同步在线表失败", ex);
 		}
 		finally
 		{
@@ -683,8 +685,9 @@ internal sealed class KeitaPotTracker
 		{
 			return JsonSerializer.Deserialize<SharedPot[]>(row.PotHistory, JSONOptions);
 		}
-		catch
+		catch (Exception ex)
 		{
+			DLog.Error("[规划] 解析 pot_history 失败", ex);
 			return null;
 		}
 	}
@@ -870,10 +873,8 @@ internal sealed class KeitaPotTracker
 			foreach (TrackerRow trackerRow in array2)
 			{
 				uint territory = trackerRow.Territory;
-				if ((territory != 1252 && territory != 1346) || 1 == 0)
-				{
+				if (!ZoneIds.IsSupportedIsland((ushort)territory))
 					continue;
-				}
 				CnDataCenterKind? cnDataCenterKind = ResolveRowDC(trackerRow);
 				if (cnDataCenterKind.HasValue)
 				{
@@ -894,8 +895,9 @@ internal sealed class KeitaPotTracker
 				ok = true;
 			}
 		}
-		catch
+		catch (Exception ex)
 		{
+			DLog.Error("[规划] 拉取目录失败", ex);
 		}
 		finally
 		{

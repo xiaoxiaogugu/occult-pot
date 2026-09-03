@@ -7,7 +7,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $toolsRoot = Split-Path -Parent $root
 $distPlugin = Join-Path $root "dist\OccultPot"
 $localTest = Join-Path $toolsRoot "OccultPot-refactor-out"
-$zipPath = Join-Path $toolsRoot "OccultPot-v2.0.2.zip"
+$zipPath = Join-Path $toolsRoot "OccultPot-v2.0.4.zip"
 $zipLatest = Join-Path $root "dist\latest.zip"
 
 dotnet build (Join-Path $root "OccultPotPlugin.csproj") -c $Configuration

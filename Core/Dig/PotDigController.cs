@@ -1,83 +1,59 @@
-using System;
-using System.Collections.Generic;
 using OccultPot.Models;
 
 namespace OccultPot.Core.Dig;
 
 internal sealed class PotDigController
 {
-	private readonly OccultPotHooks hooks;
+    private readonly OccultPotHooks hooks;
+    private readonly OccultCrescentPotRunner runner;
+    private readonly Queue<string> pendingChat = [];
 
-	private readonly OccultCrescentPotRunner runner;
+    internal bool IsActive =>
+        runner.Status is not OccultPotStatus.Idle
+            and not OccultPotStatus.Completed
+            and not OccultPotStatus.Failed;
 
-	private readonly Queue<string> pendingChat = new Queue<string>();
+    internal PotDigController(Action<StopReason>? onStopped, Func<bool>? preferTp, Func<bool>? useDiveTp, Func<float>? tpIntervalSeconds)
+    {
+        hooks  = new OccultPotHooks(onStopped, preferTp, useDiveTp, tpIntervalSeconds);
+        runner = new OccultCrescentPotRunner(hooks);
+    }
 
-	internal bool IsActive
-	{
-		get
-		{
-			OccultPotStatus status = runner.Status;
-			bool flag = ((status == OccultPotStatus.Idle || (uint)(status - 5) <= 1u) ? true : false);
-			return !flag;
-		}
-	}
+    internal OccultPotSnapshot? GetSnapshot() =>
+        runner.GetSnapshot();
 
-	internal PotDigController(Action<StopReason>? onStopped, Func<bool>? preferTp, Func<bool>? useDiveTp, Func<float>? tpIntervalSeconds)
-	{
-		hooks = new OccultPotHooks(onStopped, preferTp, useDiveTp, tpIntervalSeconds);
-		runner = new OccultCrescentPotRunner(hooks);
-	}
+    internal StartResult Start(bool medicineAlreadyUsed = false, PotKind? digKind = null)
+    {
+        hooks.ConfigureChestTable(digKind);
+        var result = runner.Start(medicineAlreadyUsed);
+        if (result.Success)
+            FlushPendingChat();
+        return result;
+    }
 
-	internal OccultPotSnapshot? GetSnapshot()
-	{
-		return runner.GetSnapshot();
-	}
+    internal void Stop(StopReason reason = StopReason.UserRequested) =>
+        runner.Stop(reason);
 
-	internal StartResult Start(bool medicineAlreadyUsed = false, PotKind? digKind = null)
-	{
-		hooks.ConfigureChestTable(digKind);
-		StartResult result = runner.Start(medicineAlreadyUsed);
-		if (result.Success)
-		{
-			FlushPendingChat();
-		}
-		return result;
-	}
+    internal void Tick()
+    {
+        if (IsActive)
+            runner.Tick(hooks.NowSeconds);
+    }
 
-	internal void Stop(StopReason reason = StopReason.UserRequested)
-	{
-		runner.Stop(reason);
-	}
+    internal void OnChatText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
 
-	internal void Tick()
-	{
-		if (IsActive)
-		{
-			runner.Tick(hooks.NowSeconds);
-		}
-	}
+        if (IsActive)
+            runner.EnqueueChat(text);
+        else if (PotHintParser.TryParseChat(text, out _))
+            pendingChat.Enqueue(text);
+    }
 
-	internal void OnChatText(string text)
-	{
-		if (!string.IsNullOrWhiteSpace(text))
-		{
-			PotChatEvent evt;
-			if (IsActive)
-			{
-				runner.EnqueueChat(text);
-			}
-			else if (PotHintParser.TryParseChat(text, out evt))
-			{
-				pendingChat.Enqueue(text);
-			}
-		}
-	}
-
-	private void FlushPendingChat()
-	{
-		while (pendingChat.Count > 0)
-		{
-			runner.EnqueueChat(pendingChat.Dequeue());
-		}
-	}
+    private void FlushPendingChat()
+    {
+        while (pendingChat.Count > 0)
+            runner.EnqueueChat(pendingChat.Dequeue());
+    }
 }

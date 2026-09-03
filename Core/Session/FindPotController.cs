@@ -1,4 +1,3 @@
-using System;
 using System.Numerics;
 using OccultPot.Core;
 using OccultPot.Core.Adapters;
@@ -11,519 +10,456 @@ namespace OccultPot.Core.Session;
 
 internal sealed class FindPotController
 {
-	private enum Step
-	{
-		Idle,
-		WaitOnline,
-		Travel,
-		WaitPeekSouth,
-		DecideSouth,
-		WaitPeekNorth,
-		DecideNorth,
-		WaitRetry,
-		WaitRestart,
-		Done,
-		Miss
-	}
+    private enum Step
+    {
+        Idle,
+        WaitOnline,
+        Travel,
+        WaitPeekSouth,
+        DecideSouth,
+        WaitPeekNorth,
+        DecideNorth,
+        WaitRetry,
+        WaitRestart,
+        Done,
+        Miss
+    }
 
-	private enum AfterTravel
-	{
-		PeekSouth,
-		PeekNorth,
-		AtPot
-	}
+    private enum AfterTravel
+    {
+        PeekSouth,
+        PeekNorth,
+        AtPot
+    }
 
-	private const double PeekSeconds = 2.0;
+    private const double PeekSeconds        = 2.0;
+    private const double OnlineWaitSeconds  = 10.0;
 
-	private const double OnlineWaitSeconds = 10.0;
+    private readonly VNavController vnav = new();
+    private readonly IslandTravel travel;
+    private readonly Random rng = new();
+    private readonly KeitaPotTracker tracker;
 
-	private readonly VNavController vnav = new VNavController();
+    private Step step;
+    private AfterTravel afterTravel;
+    private ushort territory;
+    private PotSideLayout? south;
+    private PotSideLayout? north;
+    private PotSideLayout? chosen;
+    private DateTime stepStartedUTC;
+    private int retryCount;
+    private bool observeFallback;
 
-	private readonly IslandTravel travel;
+    internal RuntimeStatus Status { get; private set; } = RuntimeStatus.Of(RuntimeStatusCode.SessionNotStarted);
 
-	private readonly Random rng = new Random();
+    internal PotKind? ChosenKind => chosen?.Kind;
 
-	private readonly KeitaPotTracker tracker;
+    internal PotSideLayout? Chosen => chosen;
 
-	private Step step;
+    internal bool IsDone => step == Step.Done;
 
-	private AfterTravel afterTravel;
+    internal bool IsMiss => step == Step.Miss;
 
-	private ushort territory;
+    internal bool IsRunning =>
+        step is not Step.Idle and not Step.Done and not Step.Miss;
 
-	private PotSideLayout? south;
+    internal FindPotController(KeitaPotTracker tracker)
+    {
+        this.tracker = tracker;
+        travel       = new IslandTravel(vnav);
+    }
 
-	private PotSideLayout? north;
+    internal void Start(ushort territoryID, PotKind? plannedKind = null)
+    {
+        Stop();
+        territory = territoryID;
+        EnsureLayouts();
+        if (south == null || north == null)
+        {
+            Status = RuntimeStatus.Of(RuntimeStatusCode.Find_NoTerritoryConfig, territoryID);
+            step   = Step.Miss;
+            return;
+        }
 
-	private PotSideLayout? chosen;
+        if (!TryStartFromOnlineTable(plannedKind))
+            BeginFind();
+    }
 
-	private DateTime stepStartedUTC;
+    private bool TryStartFromOnlineTable(PotKind? plannedKind)
+    {
+        if (plannedKind.HasValue)
+        {
+            var layout = IslandPotLayout.ByKind(territory, plannedKind.Value);
+            if (layout != null)
+            {
+                ExternalCommands.Echo("[找罐] 按在线表直达 " + layout.KindLabel);
+                BeginTravelPot(layout);
+                return true;
+            }
+        }
 
-	private int retryCount;
+        if (tracker.TryGetCatalogTarget(territory, out var kind, out var reason))
+        {
+            var layout = IslandPotLayout.ByKind(territory, kind);
+            if (layout != null)
+            {
+                ExternalCommands.Echo("[找罐] " + reason + "，按在线表直达 " + layout.KindLabel);
+                BeginTravelPot(layout);
+                return true;
+            }
+        }
 
-	private bool observeFallback;
+        return false;
+    }
 
-	internal RuntimeStatus Status { get; private set; } = RuntimeStatus.Of(RuntimeStatusCode.SessionNotStarted);
+    private void RestartFullPrediction()
+    {
+        vnav.Stop();
+        travel.Stop();
+        retryCount      = 0;
+        chosen          = null;
+        observeFallback = false;
+        EnsureLayouts();
+        if (south == null || north == null)
+        {
+            Status = RuntimeStatus.Of(RuntimeStatusCode.Find_NoTerritoryConfig, territory);
+            step   = Step.Miss;
+            return;
+        }
 
-	internal PotKind? ChosenKind => chosen?.Kind;
+        if (!TryStartFromOnlineTable(null))
+            BeginFind();
+    }
 
-	internal PotSideLayout? Chosen => chosen;
+    private void BeginFind()
+    {
+        if (TryCommitPredicted())
+            return;
 
-	internal bool IsDone => step == Step.Done;
+        var fallback = south ?? north;
+        if (fallback != null)
+        {
+            ExternalCommands.Echo("[找罐] 在线表未就绪，先去 " + fallback.KindLabel);
+            BeginTravelPot(fallback);
+            return;
+        }
 
-	internal bool IsMiss => step == Step.Miss;
+        Enter(Step.WaitOnline, RuntimeStatus.Of(RuntimeStatusCode.Find_WaitTracker, tracker.StatusLine));
+    }
 
-	internal bool IsRunning
-	{
-		get
-		{
-			Step step = this.step;
-			bool flag = ((step == Step.Idle || (uint)(step - 9) <= 1u) ? true : false);
-			return !flag;
-		}
-	}
+    internal void Stop()
+    {
+        travel.Stop();
+        vnav.Stop();
+        step            = Step.Idle;
+        chosen          = null;
+        south           = null;
+        north           = null;
+        retryCount      = 0;
+        observeFallback = false;
+        Status          = RuntimeStatus.Of(RuntimeStatusCode.Find_Stopped);
+    }
 
-	internal FindPotController(KeitaPotTracker tracker)
-	{
-		this.tracker = tracker;
-		travel = new IslandTravel(vnav);
-	}
+    internal void ApplyChatCorrection(PotKind kind) =>
+        ForceTravelTo(kind);
 
-	internal void Start(ushort territoryID, PotKind? plannedKind = null)
-	{
-		Stop();
-		territory = territoryID;
-		EnsureLayouts();
-		if (south == null || north == null)
-		{
-			Status = RuntimeStatus.Of(RuntimeStatusCode.Find_NoTerritoryConfig, territoryID);
-			step = Step.Miss;
-		}
-		else if (!TryStartFromOnlineTable(plannedKind))
-		{
-			BeginFind();
-		}
-	}
+    internal void ForceTravelTo(PotKind kind)
+    {
+        EnsureLayouts();
+        var layout = IslandPotLayout.ByKind(territory, kind);
+        if (layout == null)
+            return;
+        BeginTravelPot(layout);
+    }
 
-	private bool TryStartFromOnlineTable(PotKind? plannedKind)
-	{
-		if (plannedKind.HasValue)
-		{
-			PotSideLayout potSideLayout = IslandPotLayout.ByKind(territory, plannedKind.Value);
-			if (potSideLayout != null)
-			{
-				ExternalCommands.Echo("[找罐] 按在线表直达 " + potSideLayout.KindLabel);
-				BeginTravelPot(potSideLayout);
-				return true;
-			}
-		}
-		if (tracker.TryGetCatalogTarget(territory, out PotKind kind, out string reason))
-		{
-			PotSideLayout potSideLayout2 = IslandPotLayout.ByKind(territory, kind);
-			if (potSideLayout2 != null)
-			{
-				ExternalCommands.Echo("[找罐] " + reason + "，按在线表直达 " + potSideLayout2.KindLabel);
-				BeginTravelPot(potSideLayout2);
-				return true;
-			}
-		}
-		return false;
-	}
+    internal void TrySkipToActiveFate()
+    {
+        if (!IsRunning)
+            return;
 
-	private void RestartFullPrediction()
-	{
-		vnav.Stop();
-		travel.Stop();
-		retryCount = 0;
-		chosen = null;
-		observeFallback = false;
-		EnsureLayouts();
-		if (south == null || north == null)
-		{
-			Status = RuntimeStatus.Of(RuntimeStatusCode.Find_NoTerritoryConfig, territory);
-			step = Step.Miss;
-		}
-		else if (!TryStartFromOnlineTable(null))
-		{
-			BeginFind();
-		}
-	}
+        PotSideLayout? active = null;
+        if (south != null && FateReader.IsActive(south.FateID))
+            active = south;
+        else if (north != null && FateReader.IsActive(north.FateID))
+            active = north;
 
-	private void BeginFind()
-	{
-		if (!TryCommitPredicted())
-		{
-			PotSideLayout potSideLayout = south ?? north;
-			if (potSideLayout != null)
-			{
-				ExternalCommands.Echo("[找罐] 在线表未就绪，先去 " + potSideLayout.KindLabel);
-				BeginTravelPot(potSideLayout);
-			}
-			else
-			{
-				Enter(Step.WaitOnline, RuntimeStatus.Of(RuntimeStatusCode.Find_WaitTracker, tracker.StatusLine));
-			}
-		}
-	}
+        if (active == null)
+            return;
+        if (chosen != null && chosen.Kind == active.Kind && afterTravel == AfterTravel.AtPot)
+            return;
 
-	internal void Stop()
-	{
-		travel.Stop();
-		vnav.Stop();
-		step = Step.Idle;
-		chosen = null;
-		south = null;
-		north = null;
-		retryCount = 0;
-		observeFallback = false;
-		Status = RuntimeStatus.Of(RuntimeStatusCode.Find_Stopped);
-	}
+        ExternalCommands.Echo("[找罐] 本地校准：" + active.KindLabel + " FATE 进行中");
+        BeginTravelPot(active);
+    }
 
-	internal void ApplyChatCorrection(PotKind kind)
-	{
-		ForceTravelTo(kind);
-	}
+    internal void Tick()
+    {
+        if (!IsRunning)
+            return;
 
-	internal void ForceTravelTo(PotKind kind)
-	{
-		EnsureLayouts();
-		PotSideLayout potSideLayout = IslandPotLayout.ByKind(territory, kind);
-		if (!(potSideLayout == null))
-		{
-			BeginTravelPot(potSideLayout);
-		}
-	}
+        travel.NoteArrivalIfClose();
+        TrySkipToActiveFate();
+        if (step == Step.Done || ((observeFallback || chosen == null) && TryCommitPredicted()))
+            return;
 
-	internal void TrySkipToActiveFate()
-	{
-		Step step = this.step;
-		if ((step != Step.Idle && (uint)(step - 9) > 1u) || 1 == 0)
-		{
-			PotSideLayout potSideLayout = null;
-			if (south != null && FateReader.IsActive(south.FateID))
-			{
-				potSideLayout = south;
-			}
-			else if (north != null && FateReader.IsActive(north.FateID))
-			{
-				potSideLayout = north;
-			}
-			if (!(potSideLayout == null) && (!(chosen != null) || chosen.Kind != potSideLayout.Kind || afterTravel != AfterTravel.AtPot))
-			{
-				ExternalCommands.Echo("[找罐] 本地校准：" + potSideLayout.KindLabel + " FATE 进行中");
-				BeginTravelPot(potSideLayout);
-			}
-		}
-	}
+        switch (step)
+        {
+            case Step.WaitOnline:
+                TickWaitOnline();
+                break;
+            case Step.WaitPeekSouth:
+                if (south != null)
+                    TickWaitPeek(south, AfterTravel.PeekSouth);
+                break;
+            case Step.WaitPeekNorth:
+                if (north != null)
+                    TickWaitPeek(north, AfterTravel.PeekNorth);
+                break;
+            case Step.WaitRetry:
+                TickWaitRetry();
+                break;
+            case Step.WaitRestart:
+                if (Elapsed() >= 2.0)
+                    RestartFullPrediction();
+                break;
+            case Step.Travel:
+                TickTravel();
+                break;
+            case Step.DecideSouth:
+            case Step.DecideNorth:
+                TickDecide();
+                break;
+        }
+    }
 
-	internal void Tick()
-	{
-		Step step = this.step;
-		if ((step == Step.Idle || (uint)(step - 9) <= 1u) ? true : false)
-		{
-			return;
-		}
-		travel.NoteArrivalIfClose();
-		TrySkipToActiveFate();
-		if (this.step == Step.Done || ((observeFallback || chosen == null) && TryCommitPredicted()))
-		{
-			return;
-		}
-		bool flag;
-		switch (this.step)
-		{
-		case Step.WaitOnline:
-		case Step.WaitPeekSouth:
-		case Step.WaitPeekNorth:
-		case Step.WaitRetry:
-		case Step.WaitRestart:
-			flag = true;
-			break;
-		default:
-			flag = false;
-			break;
-		}
-		if (flag)
-		{
-			switch (this.step)
-			{
-			case Step.WaitOnline:
-				TickWaitOnline();
-				break;
-			case Step.WaitPeekSouth:
-				TickWaitPeek(south, AfterTravel.PeekSouth);
-				break;
-			case Step.WaitPeekNorth:
-				TickWaitPeek(north, AfterTravel.PeekNorth);
-				break;
-			case Step.WaitRetry:
-				TickWaitRetry();
-				break;
-			case Step.WaitRestart:
-				if (Elapsed() >= 2.0)
-				{
-					RestartFullPrediction();
-				}
-				break;
-			case Step.Travel:
-			case Step.DecideSouth:
-			case Step.DecideNorth:
-				break;
-			}
-			return;
-		}
-		if (this.step == Step.Travel)
-		{
-			TickTravel();
-			return;
-		}
-		if (!PlayerReader.IsAvailable() || !PlayerReader.Position.HasValue)
-		{
-			Status = RuntimeStatus.Of(RuntimeStatusCode.Find_WaitPlayer);
-			return;
-		}
-		switch (this.step)
-		{
-		case Step.WaitOnline:
-			TickWaitOnline();
-			break;
-		case Step.WaitPeekSouth:
-			TickWaitPeek(south, AfterTravel.PeekSouth);
-			break;
-		case Step.DecideSouth:
-			if (PlayerTargeting.HasPlayersNearPot(south.PotCenter))
-			{
-				CommitPot(south);
-			}
-			else
-			{
-				BeginTravelObserve(north, AfterTravel.PeekNorth);
-			}
-			break;
-		case Step.WaitPeekNorth:
-			TickWaitPeek(north, AfterTravel.PeekNorth);
-			break;
-		case Step.DecideNorth:
-			if (PlayerTargeting.HasPlayersNearPot(north.PotCenter))
-			{
-				CommitPot(north);
-			}
-			else if (retryCount < 1)
-			{
-				retryCount++;
-				ExternalCommands.Echo("[找罐] 两侧均无玩家，等待 120s 再试");
-				Enter(Step.WaitRetry, RuntimeStatus.Of(RuntimeStatusCode.Find_NoPlayersBoth));
-			}
-			else
-			{
-				Enter(Step.WaitRestart, RuntimeStatus.Of(RuntimeStatusCode.Find_RestartPeek));
-			}
-			break;
-		case Step.WaitRetry:
-			TickWaitRetry();
-			break;
-		case Step.WaitRestart:
-			if (Elapsed() >= 2.0)
-			{
-				RestartFullPrediction();
-			}
-			break;
-		case Step.Travel:
-			break;
-		}
-	}
+    private void TickDecide()
+    {
+        if (!PlayerReader.IsAvailable() || !PlayerReader.Position.HasValue)
+        {
+            Status = RuntimeStatus.Of(RuntimeStatusCode.Find_WaitPlayer);
+            return;
+        }
 
-	private void TickTravel()
-	{
-		travel.Tick();
-		Status = travel.Status;
-		if (travel.IsFailed)
-		{
-			step = Step.Miss;
-			Status = RuntimeStatus.Of(RuntimeStatusCode.Find_PathFailed);
-		}
-		else if (travel.IsDone)
-		{
-			switch (afterTravel)
-			{
-			case AfterTravel.PeekSouth:
-				MountActions.TryMount();
-				Enter(Step.WaitPeekSouth, RuntimeStatus.Of(RuntimeStatusCode.Find_AtSouthPeek));
-				break;
-			case AfterTravel.PeekNorth:
-				MountActions.TryMount();
-				Enter(Step.WaitPeekNorth, RuntimeStatus.Of(RuntimeStatusCode.Find_AtNorthPeek));
-				break;
-			case AfterTravel.AtPot:
-				step = Step.Done;
-				Status = RuntimeStatus.Of(RuntimeStatusCode.Find_AtPot, chosen?.KindLabel);
-				ExternalCommands.Echo("[找罐] 已到 " + chosen?.KindLabel + "，等待 FATE");
-				break;
-			}
-		}
-	}
+        if (step == Step.DecideSouth)
+        {
+            if (south == null)
+                return;
+            if (PlayerTargeting.HasPlayersNearPot(south.PotCenter))
+                CommitPot(south);
+            else if (north != null)
+                BeginTravelObserve(north, AfterTravel.PeekNorth);
+            return;
+        }
 
-	private void TickWaitOnline()
-	{
-		if (Elapsed() >= 10.0)
-		{
-			if (!TryStartFromOnlineTable(null))
-			{
-				ExternalCommands.Echo("[找罐] " + tracker.StatusLine + "，改看人");
-				BeginTravelObserve(south, AfterTravel.PeekSouth);
-			}
-		}
-		else
-		{
-			Status = RuntimeStatus.Of(RuntimeStatusCode.Find_WaitOnline, tracker.StatusLine, (int)(10.0 - Elapsed()));
-		}
-	}
+        if (north == null)
+            return;
+        if (PlayerTargeting.HasPlayersNearPot(north.PotCenter))
+        {
+            CommitPot(north);
+            return;
+        }
 
-	private bool TryCommitPredicted()
-	{
-		bool flag = TryGetLiveKind(out PotKind kind, out string reason);
-		if (!flag && !tracker.TryGetSoonestTarget(territory, out kind, out reason))
-		{
-			return false;
-		}
-		PotSideLayout potSideLayout = IslandPotLayout.ByKind(territory, kind);
-		if (potSideLayout == null)
-		{
-			return false;
-		}
-		if (chosen != null && chosen.Kind == kind && !observeFallback)
-		{
-			return false;
-		}
-		bool flag2 = observeFallback || (chosen != null && afterTravel == AfterTravel.AtPot);
-		if (flag2 && !flag && !tracker.HasOnlineData && !tracker.HasCatalog)
-		{
-			return false;
-		}
-		if (flag && chosen != null && chosen.Kind != kind)
-		{
-			ExternalCommands.Echo("[找罐] 本地校准：" + reason + "，改去 " + potSideLayout.KindLabel);
-		}
-		else
-		{
-			ExternalCommands.Echo(flag2 ? $"[找罐] {reason}，直达 {potSideLayout.KindLabel}（覆盖看人）" : ("[找罐] " + reason + "，直达 " + potSideLayout.KindLabel));
-		}
-		BeginTravelPot(potSideLayout);
-		return true;
-	}
+        if (retryCount < 1)
+        {
+            retryCount++;
+            ExternalCommands.Echo("[找罐] 两侧均无玩家，等待 120s 再试");
+            Enter(Step.WaitRetry, RuntimeStatus.Of(RuntimeStatusCode.Find_NoPlayersBoth));
+            return;
+        }
 
-	private bool TryGetLiveKind(out PotKind kind, out string reason)
-	{
-		kind = PotKind.North;
-		reason = string.Empty;
-		if (south != null && FateReader.IsActive(south.FateID))
-		{
-			kind = south.Kind;
-			reason = south.KindLabel + " FATE 进行中";
-			return true;
-		}
-		if (north != null && FateReader.IsActive(north.FateID))
-		{
-			kind = north.Kind;
-			reason = north.KindLabel + " FATE 进行中";
-			return true;
-		}
-		return false;
-	}
+        Enter(Step.WaitRestart, RuntimeStatus.Of(RuntimeStatusCode.Find_RestartPeek));
+    }
 
-	private void BeginTravelObserve(PotSideLayout side, AfterTravel after)
-	{
-		observeFallback = true;
-		Vector3 dest = IslandPotLayout.RandomObserveStand(side.ObservePoint, side.PotCenter, rng);
-		afterTravel = after;
-		travel.Begin(territory, dest, side.KindLabel + "观测点");
-		Enter(Step.Travel, travel.Status);
-	}
+    private void TickTravel()
+    {
+        travel.Tick();
+        Status = travel.Status;
+        if (travel.IsFailed)
+        {
+            step   = Step.Miss;
+            Status = RuntimeStatus.Of(RuntimeStatusCode.Find_PathFailed);
+            return;
+        }
 
-	private void BeginTravelPot(PotSideLayout layout)
-	{
-		observeFallback = false;
-		chosen = layout;
-		afterTravel = AfterTravel.AtPot;
-		travel.Begin(territory, layout.PotCenter, layout.KindLabel);
-		Enter(Step.Travel, travel.Status);
-	}
+        if (!travel.IsDone)
+            return;
 
-	private void TickWaitPeek(PotSideLayout side, AfterTravel which)
-	{
-		if (PlayerTargeting.HasPlayersNearPot(side.PotCenter))
-		{
-			CommitPot(side);
-		}
-		else if (Elapsed() >= 2.0)
-		{
-			if (which == AfterTravel.PeekSouth)
-			{
-				ExternalCommands.Echo("[找罐] 南罐附近无人，改去北罐");
-				BeginTravelObserve(north, AfterTravel.PeekNorth);
-			}
-			else
-			{
-				ExternalCommands.Echo("[找罐] 北罐附近无人");
-				Enter(Step.DecideNorth, RuntimeStatus.Of(RuntimeStatusCode.Find_JudgeNorth));
-			}
-		}
-		else
-		{
-			int value = PlayerTargeting.CountOtherPlayersNear(side.PotCenter, 50f);
-			Status = RuntimeStatus.Of(RuntimeStatusCode.Find_PeekPlayers, side.KindLabel, value);
-		}
-	}
+        switch (afterTravel)
+        {
+            case AfterTravel.PeekSouth:
+                MountActions.TryMount();
+                Enter(Step.WaitPeekSouth, RuntimeStatus.Of(RuntimeStatusCode.Find_AtSouthPeek));
+                break;
+            case AfterTravel.PeekNorth:
+                MountActions.TryMount();
+                Enter(Step.WaitPeekNorth, RuntimeStatus.Of(RuntimeStatusCode.Find_AtNorthPeek));
+                break;
+            case AfterTravel.AtPot:
+                step   = Step.Done;
+                Status = RuntimeStatus.Of(RuntimeStatusCode.Find_AtPot, chosen?.KindLabel ?? string.Empty);
+                ExternalCommands.Echo("[找罐] 已到 " + (chosen?.KindLabel ?? "") + "，等待 FATE");
+                break;
+        }
+    }
 
-	private void TickWaitRetry()
-	{
-		int num = ((!(north == null)) ? PlayerTargeting.CountOtherPlayersNear(north.PotCenter, 50f) : 0);
-		int num2 = ((!(south == null)) ? PlayerTargeting.CountOtherPlayersNear(south.PotCenter, 50f) : 0);
-		if (num > 0 && north != null)
-		{
-			ExternalCommands.Echo($"[找罐] 等待中北罐来人（{num}），留下等待 FATE");
-			CommitPot(north);
-		}
-		else if (num2 > 0 && south != null)
-		{
-			ExternalCommands.Echo($"[找罐] 等待中南罐来人（{num2}），留下等待 FATE");
-			CommitPot(south);
-		}
-		else if (Elapsed() >= 120.0)
-		{
-			Enter(Step.WaitPeekNorth, RuntimeStatus.Of(RuntimeStatusCode.Find_RetryNorthPeek));
-		}
-		else
-		{
-			Status = RuntimeStatus.Of(RuntimeStatusCode.Find_WaitRetry, 120 - (int)Elapsed(), num, num2);
-		}
-	}
+    private void TickWaitOnline()
+    {
+        if (Elapsed() < OnlineWaitSeconds)
+        {
+            Status = RuntimeStatus.Of(RuntimeStatusCode.Find_WaitOnline, tracker.StatusLine, (int)(OnlineWaitSeconds - Elapsed()));
+            return;
+        }
 
-	private void CommitPot(PotSideLayout side)
-	{
-		int value = PlayerTargeting.CountOtherPlayersNear(side.PotCenter, 50f);
-		ExternalCommands.Echo($"[找罐] {side.KindLabel}附近有人（{value}），留下等待 FATE");
-		BeginTravelPot(side);
-	}
+        if (!TryStartFromOnlineTable(null) && south != null)
+        {
+            ExternalCommands.Echo("[找罐] " + tracker.StatusLine + "，改看人");
+            BeginTravelObserve(south, AfterTravel.PeekSouth);
+        }
+    }
 
-	private void EnsureLayouts()
-	{
-		if ((!(south != null) || !(north != null)) && territory != 0)
-		{
-			south = IslandPotLayout.South(territory);
-			north = IslandPotLayout.North(territory);
-		}
-	}
+    private bool TryCommitPredicted()
+    {
+        var live = TryGetLiveKind(out var kind, out var reason);
+        if (!live && !tracker.TryGetSoonestTarget(territory, out kind, out reason))
+            return false;
 
-	private double Elapsed()
-	{
-		return (DateTime.UtcNow - stepStartedUTC).TotalSeconds;
-	}
+        var layout = IslandPotLayout.ByKind(territory, kind);
+        if (layout == null)
+            return false;
+        if (chosen != null && chosen.Kind == kind && !observeFallback)
+            return false;
 
-	private void Enter(Step step, RuntimeStatus status)
-	{
-		this.step = step;
-		stepStartedUTC = DateTime.UtcNow;
-		Status = status;
-	}
+        var overrideObserve = observeFallback || (chosen != null && afterTravel == AfterTravel.AtPot);
+        if (overrideObserve && !live && !tracker.HasOnlineData && !tracker.HasCatalog)
+            return false;
+
+        if (live && chosen != null && chosen.Kind != kind)
+            ExternalCommands.Echo("[找罐] 本地校准：" + reason + "，改去 " + layout.KindLabel);
+        else
+            ExternalCommands.Echo(overrideObserve
+                ? $"[找罐] {reason}，直达 {layout.KindLabel}（覆盖看人）"
+                : "[找罐] " + reason + "，直达 " + layout.KindLabel);
+
+        BeginTravelPot(layout);
+        return true;
+    }
+
+    private bool TryGetLiveKind(out PotKind kind, out string reason)
+    {
+        kind   = PotKind.North;
+        reason = string.Empty;
+        if (south != null && FateReader.IsActive(south.FateID))
+        {
+            kind   = south.Kind;
+            reason = south.KindLabel + " FATE 进行中";
+            return true;
+        }
+
+        if (north != null && FateReader.IsActive(north.FateID))
+        {
+            kind   = north.Kind;
+            reason = north.KindLabel + " FATE 进行中";
+            return true;
+        }
+
+        return false;
+    }
+
+    private void BeginTravelObserve(PotSideLayout side, AfterTravel after)
+    {
+        observeFallback = true;
+        var dest = IslandPotLayout.RandomObserveStand(side.ObservePoint, side.PotCenter, rng);
+        afterTravel = after;
+        travel.Begin(territory, dest, side.KindLabel + "观测点");
+        Enter(Step.Travel, travel.Status);
+    }
+
+    private void BeginTravelPot(PotSideLayout layout)
+    {
+        observeFallback = false;
+        chosen          = layout;
+        afterTravel     = AfterTravel.AtPot;
+        travel.Begin(territory, layout.PotCenter, layout.KindLabel);
+        Enter(Step.Travel, travel.Status);
+    }
+
+    private void TickWaitPeek(PotSideLayout side, AfterTravel which)
+    {
+        if (PlayerTargeting.HasPlayersNearPot(side.PotCenter))
+        {
+            CommitPot(side);
+            return;
+        }
+
+        if (Elapsed() < PeekSeconds)
+        {
+            var nearby = PlayerTargeting.CountOtherPlayersNear(side.PotCenter, 50f);
+            Status = RuntimeStatus.Of(RuntimeStatusCode.Find_PeekPlayers, side.KindLabel, nearby);
+            return;
+        }
+
+        if (which == AfterTravel.PeekSouth)
+        {
+            if (north == null)
+                return;
+            ExternalCommands.Echo("[找罐] 南罐附近无人，改去北罐");
+            BeginTravelObserve(north, AfterTravel.PeekNorth);
+            return;
+        }
+
+        ExternalCommands.Echo("[找罐] 北罐附近无人");
+        Enter(Step.DecideNorth, RuntimeStatus.Of(RuntimeStatusCode.Find_JudgeNorth));
+    }
+
+    private void TickWaitRetry()
+    {
+        var northCount = north != null ? PlayerTargeting.CountOtherPlayersNear(north.PotCenter, 50f) : 0;
+        var southCount = south != null ? PlayerTargeting.CountOtherPlayersNear(south.PotCenter, 50f) : 0;
+        if (northCount > 0 && north != null)
+        {
+            ExternalCommands.Echo($"[找罐] 等待中北罐来人（{northCount}），留下等待 FATE");
+            CommitPot(north);
+            return;
+        }
+
+        if (southCount > 0 && south != null)
+        {
+            ExternalCommands.Echo($"[找罐] 等待中南罐来人（{southCount}），留下等待 FATE");
+            CommitPot(south);
+            return;
+        }
+
+        if (Elapsed() >= 120.0)
+        {
+            Enter(Step.WaitPeekNorth, RuntimeStatus.Of(RuntimeStatusCode.Find_RetryNorthPeek));
+            return;
+        }
+
+        Status = RuntimeStatus.Of(RuntimeStatusCode.Find_WaitRetry, 120 - (int)Elapsed(), northCount, southCount);
+    }
+
+    private void CommitPot(PotSideLayout side)
+    {
+        var nearby = PlayerTargeting.CountOtherPlayersNear(side.PotCenter, 50f);
+        ExternalCommands.Echo($"[找罐] {side.KindLabel}附近有人（{nearby}），留下等待 FATE");
+        BeginTravelPot(side);
+    }
+
+    private void EnsureLayouts()
+    {
+        if (south != null && north != null || territory == 0)
+            return;
+        south = IslandPotLayout.South(territory);
+        north = IslandPotLayout.North(territory);
+    }
+
+    private double Elapsed() =>
+        (DateTime.UtcNow - stepStartedUTC).TotalSeconds;
+
+    private void Enter(Step step, RuntimeStatus status)
+    {
+        this.step      = step;
+        stepStartedUTC = DateTime.UtcNow;
+        Status         = status;
+    }
 }

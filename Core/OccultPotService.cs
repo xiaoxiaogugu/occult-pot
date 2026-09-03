@@ -1,9 +1,8 @@
-using System;
 using Dalamud.Game.Chat;
 using OccultPot.Core.Adapters;
 using OccultPot.Core.Data;
-using OccultPot.Core.Session;
 using OccultPot.Core.Dig;
+using OccultPot.Core.Session;
 using OccultPot.Models;
 using OmenTools;
 
@@ -11,186 +10,159 @@ namespace OccultPot.Core;
 
 internal sealed class OccultPotService
 {
-	private readonly PotSessionOrchestrator session;
+    private readonly PotSessionOrchestrator session;
+    private readonly PotDigController dig;
+    private readonly Func<PluginConfiguration> getConfig;
+    private readonly Action saveConfig;
+    private bool digOnlyMode;
 
-	private readonly PotDigController dig;
+    internal SessionPhase Phase => session.Phase;
 
-	private readonly Func<PluginConfiguration> getConfig;
+    internal RuntimeStatus Status => session.Status;
 
-	private readonly Action saveConfig;
+    internal bool IsDigOnlyMode => digOnlyMode;
 
-	private bool digOnlyMode;
+    internal string ActivityLabel => SessionBriefFormatter.Activity(this);
 
-	internal SessionPhase Phase => session.Phase;
+    internal string NextTargetLabel => SessionBriefFormatter.NextTarget(this);
 
-	internal RuntimeStatus Status => session.Status;
+    internal bool TryGetNextTargetLabel(out string label) => session.TryGetNextTargetLabel(out label);
 
-	internal bool IsDigOnlyMode => digOnlyMode;
+    internal string RouteSummary => session.RouteSummary;
 
-	internal string ActivityLabel => SessionBriefFormatter.Activity(this);
+    internal RuntimeStatus TrackerStatus => session.TrackerStatus;
 
-	internal string NextTargetLabel => SessionBriefFormatter.NextTarget(this);
+    internal RuntimeStatus TrackerCatalog => session.TrackerCatalog;
 
-	internal bool TryGetNextTargetLabel(out string label) => session.TryGetNextTargetLabel(out label);
+    internal PotKind? ActiveKind => session.ActiveKind;
 
-	internal string RouteSummary => session.RouteSummary;
+    internal bool IsSessionRunning => session.IsRunning;
 
-	internal RuntimeStatus TrackerStatus => session.TrackerStatus;
+    internal bool IsDigActive => dig.IsActive;
 
-	internal RuntimeStatus TrackerCatalog => session.TrackerCatalog;
+    internal bool IsRunning =>
+        getConfig().Enabled && (session.IsRunning || digOnlyMode || dig.IsActive);
 
-	internal PotKind? ActiveKind => session.ActiveKind;
+    internal bool CanSkipIsland =>
+        getConfig().Enabled && session.CanSkipCurrentIsland && !digOnlyMode;
 
-	internal bool IsSessionRunning => session.IsRunning;
+    internal bool IsPotFateCombat => session.IsPotFateCombat;
 
-	internal bool IsDigActive => dig.IsActive;
+    internal OccultPotSnapshot? DigSnapshot => dig.GetSnapshot();
 
-	internal bool IsRunning
-	{
-		get
-		{
-			if (getConfig().Enabled)
-			{
-				if (!session.IsRunning && !digOnlyMode)
-				{
-					return dig.IsActive;
-				}
-				return true;
-			}
-			return false;
-		}
-	}
+    internal OccultPotService(Func<PluginConfiguration> getConfig, Action saveConfig)
+    {
+        this.getConfig  = getConfig;
+        this.saveConfig = saveConfig;
+        dig     = new PotDigController(OnDigStopped, () => getConfig().PreferTp, () => getConfig().UseDiveTp, () => getConfig().TpIntervalSeconds);
+        session = new PotSessionOrchestrator(getConfig, dig);
+    }
 
-	internal bool CanSkipIsland =>
-		getConfig().Enabled && session.CanSkipCurrentIsland && !digOnlyMode;
+    private void OnDigStopped(StopReason reason)
+    {
+        if (!digOnlyMode)
+        {
+            session.OnDigStopped(reason);
+            return;
+        }
 
-	internal bool IsPotFateCombat => session.IsPotFateCombat;
+        digOnlyMode           = false;
+        getConfig().Enabled   = false;
+        saveConfig();
+    }
 
-	internal OccultPotSnapshot? DigSnapshot => dig.GetSnapshot();
+    internal void Tick()
+    {
+        var config = getConfig();
+        if (!config.Enabled)
+            return;
 
-	internal OccultPotService(Func<PluginConfiguration> getConfig, Action saveConfig)
-	{
-		this.getConfig = getConfig;
-		this.saveConfig = saveConfig;
-		dig = new PotDigController(OnDigStopped, () => getConfig().PreferTp, () => getConfig().UseDiveTp, () => getConfig().TpIntervalSeconds);
-		session = new PotSessionOrchestrator(getConfig, saveConfig, dig);
-	}
+        if (!digOnlyMode)
+        {
+            session.Tick();
+            if (session.Phase == SessionPhase.Failed)
+            {
+                config.Enabled = false;
+                saveConfig();
+            }
+            return;
+        }
 
-	private void OnDigStopped(StopReason reason)
-	{
-		if (digOnlyMode)
-		{
-			digOnlyMode = false;
-			getConfig().Enabled = false;
-			saveConfig();
-		}
-		else
-		{
-			session.OnDigStopped(reason);
-		}
-	}
+        dig.Tick();
+        if (dig.IsActive)
+            return;
 
-	internal void Tick()
-	{
-		PluginConfiguration pluginConfiguration = getConfig();
-		if (!pluginConfiguration.Enabled)
-		{
-			return;
-		}
-		if (digOnlyMode)
-		{
-			dig.Tick();
-			if (!dig.IsActive)
-			{
-				digOnlyMode = false;
-				pluginConfiguration.Enabled = false;
-				saveConfig();
-			}
-		}
-		else
-		{
-			session.Tick();
-		}
-	}
+        digOnlyMode     = false;
+        config.Enabled  = false;
+        saveConfig();
+    }
 
-	internal void OnChatMessage(IHandleableChatMessage message)
-	{
-		OnChatText(((IMutableChatMessage)message).Message.TextValue);
-	}
+    internal void OnChatMessage(IHandleableChatMessage message) =>
+        OnChatText(((IMutableChatMessage)message).Message.TextValue);
 
-	internal void OnChatText(string text)
-	{
-		session.OnChatMessage(text);
-	}
+    internal void OnChatText(string text) =>
+        session.OnChatMessage(text);
 
-	internal void Start()
-	{
-		if (OccultPotRuntime.RequireSupported())
-		{
-			PluginConfiguration pluginConfiguration = getConfig();
-			pluginConfiguration.SyncHomeWorldLock();
-			digOnlyMode = false;
-			pluginConfiguration.Enabled = true;
-			saveConfig();
-			session.Start();
-		}
-	}
+    internal void Start()
+    {
+        if (!OccultPotRuntime.RequireSupported())
+            return;
 
-	internal void StartDigOnly()
-	{
-		if (OccultPotRuntime.RequireSupported() && ZoneIds.IsSupportedIsland((ushort)DService.Instance().ClientState.TerritoryType))
-		{
-			session.Stop();
-			PluginConfiguration pluginConfiguration = getConfig();
-			digOnlyMode = true;
-			pluginConfiguration.Enabled = true;
-			saveConfig();
-			if (!dig.Start().Success)
-			{
-				digOnlyMode = false;
-				pluginConfiguration.Enabled = false;
-				saveConfig();
-			}
-			else
-			{
-				ExternalCommands.Echo("[挖箱] 挖箱已启动");
-			}
-		}
-	}
+        var config = getConfig();
+        config.SyncHomeWorldLock();
+        digOnlyMode    = false;
+        config.Enabled = true;
+        session.Start();
+        if (session.Phase == SessionPhase.Failed)
+            config.Enabled = false;
+        saveConfig();
+    }
 
-	internal void Stop()
-	{
-		digOnlyMode = false;
-		session.Stop();
-		if (dig.IsActive)
-		{
-			dig.Stop();
-		}
-		getConfig().Enabled = false;
-		saveConfig();
-	}
+    internal void StartDigOnly()
+    {
+        if (!OccultPotRuntime.RequireSupported() ||
+            !ZoneIds.IsSupportedIsland((ushort)DService.Instance().ClientState.TerritoryType))
+            return;
 
-	internal void Uninit()
-	{
-		session.Uninit();
-	}
+        session.Stop();
+        var config = getConfig();
+        digOnlyMode    = true;
+        config.Enabled = true;
+        saveConfig();
+        if (dig.Start().Success)
+        {
+            ExternalCommands.Echo("[挖箱] 挖箱已启动");
+            return;
+        }
 
-	internal void SkipCurrentIsland()
-	{
-		if (!digOnlyMode && session.CanSkipCurrentIsland)
-		{
-			session.RequestSkipIsland();
-		}
-	}
+        digOnlyMode    = false;
+        config.Enabled = false;
+        saveConfig();
+    }
 
-	internal bool ShouldKeepPotFateTarget()
-	{
-		if (!getConfig().Enabled)
-			return false;
-		if (digOnlyMode || dig.IsActive)
-		{
-			return false;
-		}
-		return session.IsPotFateCombat;
-	}
+    internal void Stop()
+    {
+        digOnlyMode = false;
+        session.Stop();
+        if (dig.IsActive)
+            dig.Stop();
+        getConfig().Enabled = false;
+        saveConfig();
+    }
+
+    internal void Uninit() =>
+        session.Uninit();
+
+    internal void SkipCurrentIsland()
+    {
+        if (!digOnlyMode && session.CanSkipCurrentIsland)
+            session.RequestSkipIsland();
+    }
+
+    internal bool ShouldKeepPotFateTarget()
+    {
+        if (!getConfig().Enabled || digOnlyMode || dig.IsActive)
+            return false;
+        return session.IsPotFateCombat;
+    }
 }

@@ -30,7 +30,8 @@ internal sealed class VNavController
 	{
 		try
 		{
-			vnavmeshIPC.StopPathfind();
+			if (IsRunning())
+				vnavmeshIPC.StopPathfind();
 			vnavmeshIPC.CancelAllQueries();
 		}
 		catch

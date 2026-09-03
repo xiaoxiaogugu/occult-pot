@@ -153,23 +153,8 @@ internal sealed class OccultCrescent : IDisposable
     {
         talkHooks.Dispose();
 
-        try
-        {
-            DService.Instance().Toast.Toast -= OnToast;
-        }
-        catch (Exception ex)
-        {
-            DLog.Error("[OccultPot] Toast 取消订阅失败", ex);
-        }
-
-        try
-        {
-            DService.Instance().Chat.ChatMessage -= OnChatMessage;
-        }
-        catch (Exception ex)
-        {
-            DLog.Error("[OccultPot] Chat 取消订阅失败", ex);
-        }
+        DService.Instance().Toast.Toast -= OnToast;
+        DService.Instance().Chat.ChatMessage -= OnChatMessage;
 
         FrameworkManager.Instance().Unreg(OnTargetTick, OnServiceTick);
 

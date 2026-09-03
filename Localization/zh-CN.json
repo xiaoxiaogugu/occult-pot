@@ -157,9 +157,9 @@
 
   "Camp_WaitActionable": "[营地] 等待可行动…",
   "Camp_WaitLand": "[营地] 等待返回落地…",
-  "Camp_WaitBocchi": "[营地] 等待 Bocchi 返回后再挖箱",
-  "Camp_BocchiReturning": "[营地] Bocchi 返回中…",
-  "Camp_WaitBocchiTimer": "[营地] 等待 Bocchi 返回营地… {0:0.0}s",
+  "Camp_WaitBocchi": "[营地] 等待返回后再挖箱",
+  "Camp_BocchiReturning": "[营地] 返回中…",
+  "Camp_WaitBocchiTimer": "[营地] 等待返回营地… {0:0.0}s",
 
   "Dig_ReadyAtCamp": "[挖箱] 已回营地，启动",
   "Dig_SkipFind": "[挖箱] 已持罐，跳过找罐",

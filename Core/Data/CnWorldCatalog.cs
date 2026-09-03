@@ -112,3 +112,9 @@ internal static class CnWorldCatalog
         return null;
     }
 }
+
+internal static class CnDataCenterKindUI
+{
+    internal static string Display(this CnDataCenterKind kind) =>
+        CnWorldCatalog.DCDisplayName(kind);
+}
