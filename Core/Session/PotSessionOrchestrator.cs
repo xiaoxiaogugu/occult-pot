@@ -94,13 +94,21 @@ internal sealed class PotSessionOrchestrator
 
     private const double CampReturnIdleGiveUpSeconds = 8.0;
 
-    private const double PlanWaitSeconds = 10.0;
+    private const double PlanWaitSeconds = 20.0;
+
+    private const double PlanWaitMaxSeconds = 25.0;
 
     private const double LocalReconcileWaitSeconds = 8.0;
 
     internal SessionPhase Phase => phase;
 
     internal bool IsPotFateCombat => phase == SessionPhase.WaitFight;
+
+    // 只在罐 Fate Running 时选敌；等罐 / 结束中 / 领奖都不动目标。
+    internal bool ShouldKeepPotFateTarget() =>
+        phase == SessionPhase.WaitFight
+        && activeLayout != null
+        && FateReader.IsActive(activeLayout.FateID);
 
     internal RuntimeStatus Status => status;
 
@@ -146,25 +154,35 @@ internal sealed class PotSessionOrchestrator
             kind = localKind;
             plannedKind = localKind;
             committedWorldID = CnWorldCatalog.CurrentWorldID;
+            if (!localAlive)
+            {
+                localWait = OccultTrackerPlanner.WaitAfterCrowdWindow(localWait, localGone, true);
+                if (localWait > 0)
+                    localGone = localWait + OccultTrackerPlanner.FateAliveSeconds;
+            }
+
             label = SessionBriefFormatter.FormatVisitShort(dc, committedWorldID, territory, kind, localAlive, localWait, localGone);
             return true;
         }
 
         if (tracker.TryGetNextTiming(dc, territory, out var nextKind, out var wait, out var untilGone, out var alive))
         {
-            // 等罐中却显示「进行中」：众包存活窗与现场 Fate 不一致时，不当存活展示。
-            if (onTargetIsland
-                && alive
+            if (alive
+                && onTargetIsland
                 && phase == SessionPhase.WaitFight
                 && activeLayout != null
                 && !FateReader.IsActive(activeLayout.FateID))
             {
                 var other = IslandPotLayout.ByKind(territory, activeLayout.Kind == PotKind.North ? PotKind.South : PotKind.North);
                 if (other == null || !FateReader.IsActive(other.FateID))
-                {
                     alive = false;
-                    wait = Math.Max(untilGone, OccultTrackerPlanner.AbandonWaitSeconds);
-                }
+            }
+
+            if (!alive)
+            {
+                wait = OccultTrackerPlanner.WaitAfterCrowdWindow(wait, untilGone, onTargetIsland);
+                if (wait > 0)
+                    untilGone = wait + OccultTrackerPlanner.FateAliveSeconds;
             }
 
             label = SessionBriefFormatter.FormatVisitShort(dc, worldID, territory, nextKind, alive, wait, untilGone);
@@ -456,7 +474,9 @@ internal sealed class PotSessionOrchestrator
         {
             return;
         }
-        if (Elapsed() >= 10.0)
+        var waitForFetch = !tracker.HasCatalog && tracker.CatalogInFlight;
+        var limit = waitForFetch ? PlanWaitMaxSeconds : PlanWaitSeconds;
+        if (Elapsed() >= limit)
         {
             ExternalCommands.Echo("[规划] 四区数据不足，按勾选顺序");
             if (skippedTerritory != 0)
@@ -469,7 +489,7 @@ internal sealed class PotSessionOrchestrator
             EnterEnsureWorldForCurrentSlot("按勾选顺序");
             return;
         }
-        int value = (int)Math.Ceiling(10.0 - Elapsed());
+        int value = (int)Math.Ceiling(limit - Elapsed());
         status = tracker.CatalogStatus.IsNone
             ? RuntimeStatus.Of(RuntimeStatusCode.Plan_FetchCatalog, value)
             : RuntimeStatus.Of(RuntimeStatusCode.Plan_CatalogDetail, tracker.CatalogStatus, value);
@@ -736,7 +756,6 @@ internal sealed class PotSessionOrchestrator
             if (FateReader.IsActive(potSideLayout.FateID))
             {
                 sawFateActive = true;
-                BmrAi.On();
             }
             else
             {
@@ -756,13 +775,14 @@ internal sealed class PotSessionOrchestrator
             fateWaitDismountIssued = true;
             status = RuntimeStatus.Of(RuntimeStatusCode.Fight_DismountWait, potSideLayout.KindLabel);
         }
+
+        // Fate 开了或已经进战：持续确保 BMR 开着（命令失败会隔 2 秒再发）。
+        if (FateReader.IsActive(potSideLayout.FateID) || PlayerReader.IsInCombat())
+            BmrAi.On();
+
         if (FateReader.IsActive(potSideLayout.FateID))
         {
-            if (!sawFateActive)
-            {
-                sawFateActive = true;
-                BmrAi.On();
-            }
+            sawFateActive = true;
             TryAcceptPartyIfEnabled();
             status = RuntimeStatus.Of(RuntimeStatusCode.Fight_InProgress, potSideLayout.KindLabel);
         }
@@ -803,13 +823,11 @@ internal sealed class PotSessionOrchestrator
     }
 
     /// <summary>
-    /// 本地数据就绪后再和四区比：本岛对侧只改侧，别处更近才退岛。
+    /// 现场 Running 留下；众包窗开头留下等。窗过了或本地不可信，别处更近才退岛。
     /// </summary>
     private bool TryLeaveForSoonerVisit()
     {
         if (KeitaPotTracker.IsLocalFateAlive(targetTerritory))
-            return false;
-        if (!LocalReconcileReady())
             return false;
         if (!TryResolveRouteDC(out var dc))
             return false;
@@ -845,6 +863,24 @@ internal sealed class PotSessionOrchestrator
             return false;
         }
 
+        if (best.Alive)
+            return false;
+
+        var localWait = OccultTrackerPlanner.AbandonWaitSeconds;
+        if (tracker.TryGetLocalPreferred(targetTerritory, out _, out var wait, out var gone, out var localAlive))
+        {
+            if (localAlive)
+                return false;
+            localWait = OccultTrackerPlanner.WaitAfterCrowdWindow(wait, gone, true);
+        }
+
+        var hop = best.DC == dc
+            ? OccultTrackerPlanner.SameDCHopSeconds
+            : OccultTrackerPlanner.CrossDCBufferSeconds;
+        if (localWait <= hop)
+            return false;
+
+        RememberSkippedIsland();
         afterLeave = AfterLeave.Advance;
         BeginLeave(RuntimeStatus.Of(RuntimeStatusCode.WorldTravel_NextReplan));
         return true;

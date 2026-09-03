@@ -1,4 +1,5 @@
 using System.Numerics;
+using Dalamud.Game.ClientState.Fates;
 using Dalamud.Game.ClientState.Objects.Enums;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
@@ -13,9 +14,16 @@ namespace OccultPot.Core.Game;
 internal static unsafe class PotFateTargeter
 {
     private const uint AutoAttackActionID = 7;
-    private static bool keeping;
+    private const float CircleSlack = 25f;
 
-    internal static void Idle() => keeping = false;
+    private static bool keeping;
+    private static nint keptAddress;
+
+    internal static void Idle()
+    {
+        keeping     = false;
+        keptAddress = 0;
+    }
 
     internal static void Tick(bool allow)
     {
@@ -23,41 +31,27 @@ internal static unsafe class PotFateTargeter
         {
             if (keeping)
                 ClearHostileTarget();
-            keeping = false;
+            Idle();
             return;
         }
 
         keeping = true;
         if (DService.Instance().ObjectTable.LocalPlayer is not { IsDead: false } localPlayer)
         {
+            keptAddress = 0;
             ClearHostileTarget();
             return;
         }
 
-        ushort activePotFateID = 0;
-        var nearestFateCenterDistance = float.MaxValue;
-        foreach (var fate in DService.Instance().Fate)
-        {
-            if (!IslandPotLayout.IsPotFate(fate.FateId) || fate.Radius <= 0f)
-                continue;
-
-            var offset = localPlayer.Position - fate.Position;
-            var centerDistance = offset.X * offset.X + offset.Z * offset.Z;
-            if (centerDistance > fate.Radius * fate.Radius || centerDistance >= nearestFateCenterDistance)
-                continue;
-
-            activePotFateID = fate.FateId;
-            nearestFateCenterDistance = centerDistance;
-        }
-
+        var activePotFateID = FindActivePotFateID(localPlayer.Position);
         var targetSystem = TargetSystem.Instance();
-        if (activePotFateID == 0 || targetSystem == null)
+        if (targetSystem == null)
         {
-            ClearHostileTarget();
+            keptAddress = 0;
             return;
         }
 
-        IBattleNPC? selected = null;
+        IBattleNPC? kept    = null;
         IBattleNPC? nearest = null;
         var nearestDistance = float.MaxValue;
 
@@ -66,29 +60,50 @@ internal static unsafe class PotFateTargeter
             if (obj is not IBattleNPC enemy || !IsValidPotFateEnemy(enemy, activePotFateID))
                 continue;
 
-            if (enemy.Address == (nint)targetSystem->Target)
-            {
-                selected = enemy;
-                break;
-            }
+            if (keptAddress != 0 && enemy.Address == keptAddress)
+                kept = enemy;
 
             var distance = Vector3.DistanceSquared(localPlayer.Position, enemy.Position);
             if (distance >= nearestDistance)
                 continue;
 
-            nearest = enemy;
+            nearest         = enemy;
             nearestDistance = distance;
         }
 
-        selected ??= nearest;
+        var selected = kept ?? nearest;
         if (selected == null)
         {
+            keptAddress = 0;
             ClearHostileTarget();
             return;
         }
 
+        keptAddress = selected.Address;
         if (selected.Address != (nint)targetSystem->Target)
             targetSystem->Target = (GameObject*)selected.Address;
+    }
+
+    private static ushort FindActivePotFateID(Vector3 playerPos)
+    {
+        ushort id     = 0;
+        var    nearest = float.MaxValue;
+        foreach (var fate in DService.Instance().Fate)
+        {
+            if (!IslandPotLayout.IsPotFate(fate.FateId) || fate.State != FateState.Running || fate.Radius <= 0f)
+                continue;
+
+            var offset         = playerPos - fate.Position;
+            var centerDistance = offset.X * offset.X + offset.Z * offset.Z;
+            var reach          = fate.Radius + CircleSlack;
+            if (centerDistance > reach * reach || centerDistance >= nearest)
+                continue;
+
+            id      = fate.FateId;
+            nearest = centerDistance;
+        }
+
+        return id;
     }
 
     private static void ClearHostileTarget()
@@ -130,9 +145,16 @@ internal static unsafe class PotFateTargeter
             return false;
 
         var gameObject = (GameObject*)enemy.Address;
-        return gameObject != null &&
-               enemy.SubKind == 5 &&
-               gameObject->FateId == activePotFateID &&
-               ActionManager.CanUseActionOnTarget(AutoAttackActionID, gameObject);
+        if (gameObject == null ||
+            enemy.SubKind != 5 ||
+            !IslandPotLayout.IsPotFate(gameObject->FateId) ||
+            !ActionManager.CanUseActionOnTarget(AutoAttackActionID, gameObject))
+            return false;
+
+        // 人还在圈里：只打当前这个罐的怪。追出去后 FateId 对上就留着，避免清目标。
+        if (activePotFateID != 0 && gameObject->FateId != activePotFateID)
+            return false;
+
+        return true;
     }
 }

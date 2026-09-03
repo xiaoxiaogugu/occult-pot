@@ -118,17 +118,15 @@ internal static class PlayerReader
 
 internal static class FateReader
 {
+    /// <summary>
+    ///     只认游戏 Fate 表里 Running。筹备 / 结束中都不算进行中。
+    /// </summary>
     internal static bool IsActive(uint fateID)
     {
         foreach (var fate in DService.Instance().Fate)
         {
-            if (fate.FateId != fateID)
-                continue;
-
-            if (fate.State is FateState.Ended or FateState.Ending or FateState.Failed)
-                return false;
-
-            return true;
+            if (fate.FateId == fateID && fate.State == FateState.Running)
+                return true;
         }
 
         return false;

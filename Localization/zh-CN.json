@@ -63,6 +63,7 @@
   "SummaryPotAlive": "进行中 剩{0}",
   "SummaryPotAvailable": "可打 剩{0}",
   "SummaryPotStale": "数据过期",
+  "SummaryPotImminent": "即将刷新",
   "SummaryPotWait": "{0}后刷新",
   "StatusDetail": "步骤详情",
   "TerritorySouth": "南征之章（1252）",

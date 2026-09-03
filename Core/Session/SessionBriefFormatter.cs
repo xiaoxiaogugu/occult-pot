@@ -94,8 +94,11 @@ internal static class SessionBriefFormatter
             return OccultPotLoc.Format(
                 forNext ? "SummaryPotAvailable" : "SummaryPotAlive",
                 OccultTrackerPlanner.FormatMmSs(untilGone));
+        // wait=0 且还有窗口：众包认为该刷新，现场 Fate 还没 Running。不是过期。
         if (wait <= 0)
-            return OccultPotLoc.Get("SummaryPotStale");
+            return untilGone > 0
+                ? OccultPotLoc.Get("SummaryPotImminent")
+                : OccultPotLoc.Get("SummaryPotStale");
         return OccultPotLoc.Format("SummaryPotWait", OccultTrackerPlanner.FormatMmSs(wait));
     }
 }

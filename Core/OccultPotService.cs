@@ -167,6 +167,6 @@ internal sealed class OccultPotService
     {
         if (!getConfig().Enabled || digOnlyMode || dig.IsActive)
             return false;
-        return session.IsPotFateCombat;
+        return session.ShouldKeepPotFateTarget();
     }
 }

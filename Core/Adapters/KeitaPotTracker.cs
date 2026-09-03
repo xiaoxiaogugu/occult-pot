@@ -205,13 +205,15 @@ internal sealed class KeitaPotTracker
 
 	private const int SyncRefreshSeconds = 60;
 
-	private const int FastRetrySeconds = 5;
+	private const int FastRetrySeconds = 15;
 
 	private const int CatalogRefreshSeconds = 60;
 
-	private const int CatalogFastRetrySeconds = 5;
+	private const int CatalogFastRetrySeconds = 30;
 
-	private const int MissingTrackerChecksBeforeCreate = 2;
+	private const int MissingTrackerChecksBeforeCreate = 3;
+
+	private const int MinForceCatalogSeconds = 20;
 
 	private static readonly HashSet<uint> SouthHornFateIDs = new HashSet<uint>
 	{
@@ -274,11 +276,17 @@ internal sealed class KeitaPotTracker
 
 	private volatile bool catalogFetchFailed;
 
+	private volatile bool syncTimedOut;
+
+	private volatile bool catalogTimedOut;
+
 	internal RuntimeStatus StatusLine => statusLine;
 
 	internal bool HasOnlineData => hasOnlineData;
 
 	internal bool HasCatalog => hasCatalog;
+
+	internal bool CatalogInFlight => catalogInFlight;
 
 	internal RuntimeStatus CatalogStatus { get; private set; } = RuntimeStatus.None;
 
@@ -293,13 +301,19 @@ internal sealed class KeitaPotTracker
 		lastCatalogAt = 0L;
 		hasCatalog = false;
 		catalogFetchFailed = false;
+		catalogTimedOut = false;
+		syncTimedOut = false;
 		CatalogStatus = RuntimeStatus.None;
 	}
 
 	internal void ForceCatalogRefresh()
 	{
+		if (catalogInFlight)
+			return;
+		var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+		if (hasCatalog && lastCatalogAt > 0 && now - lastCatalogAt < MinForceCatalogSeconds)
+			return;
 		lastCatalogAt = 0L;
-		catalogFetchFailed = true;
 	}
 
 	internal void ResetIsland()
@@ -478,6 +492,7 @@ internal sealed class KeitaPotTracker
 			islands = remote.Values.ToList();
 		}
 		TryLocalSpawns(currentTerritory, out var localNorth, out var localSouth);
+		PotKind? running = TryGetLocalRunningKind(currentTerritory, out var runningKind) ? runningKind : null;
 		return OccultTrackerPlanner.TryPickVisit(
 			islands,
 			worlds,
@@ -491,7 +506,7 @@ internal sealed class KeitaPotTracker
 			excludePotTerritory,
 			excludePotKind,
 			excludePotDC,
-			IsLocalFateAlive(currentTerritory),
+			running,
 			localNorth,
 			localSouth);
 	}
@@ -513,6 +528,7 @@ internal sealed class KeitaPotTracker
 			islands = remote.Values.ToList();
 		}
 		TryLocalSpawns(currentTerritory, out var localNorth, out var localSouth);
+		PotKind? running = TryGetLocalRunningKind(currentTerritory, out var runningKind) ? runningKind : null;
 		return OccultTrackerPlanner.TryPickVisit(
 			islands,
 			worlds,
@@ -526,19 +542,32 @@ internal sealed class KeitaPotTracker
 			excludePotTerritory,
 			excludePotKind,
 			excludePotDC,
-			IsLocalFateAlive(currentTerritory),
+			running,
 			localNorth,
 			localSouth);
 	}
 
-	internal static bool IsLocalFateAlive(ushort territory)
+	internal static bool IsLocalFateAlive(ushort territory) =>
+		TryGetLocalRunningKind(territory, out _);
+
+	internal static bool TryGetLocalRunningKind(ushort territory, out PotKind kind)
 	{
+		kind = PotKind.North;
 		if (!ZoneIds.IsSupportedIsland(territory) || (ushort)GameState.TerritoryType != territory)
 			return false;
 		var north = IslandPotLayout.North(territory);
 		var south = IslandPotLayout.South(territory);
-		return north != null && FateReader.IsActive(north.FateID)
-		       || south != null && FateReader.IsActive(south.FateID);
+		if (north != null && FateReader.IsActive(north.FateID))
+		{
+			kind = PotKind.North;
+			return true;
+		}
+		if (south != null && FateReader.IsActive(south.FateID))
+		{
+			kind = PotKind.South;
+			return true;
+		}
+		return false;
 	}
 
 	internal bool TryGetTarget(ushort territory, out PotKind kind, out string reason)
@@ -589,16 +618,16 @@ internal sealed class KeitaPotTracker
 		foreach (IFate item in (IEnumerable<IFate>)DService.Instance().Fate)
 		{
 			PotState pot = GetPot(item.FateId);
-			if (pot != null)
+			if (pot == null || item.State != FateState.Running)
+				continue;
+
+			pot.LastSeenAlive = now;
+			pot.SpawnTime = item.StartTimeEpoch;
+			pot.LocallyObserved = true;
+			if (!pot.Alive)
 			{
-				pot.LastSeenAlive = now;
-				pot.SpawnTime = item.StartTimeEpoch;
-				pot.LocallyObserved = true;
-				if (!pot.Alive)
-				{
-					pot.Alive = true;
-					syncRequested = true;
-				}
+				pot.Alive = true;
+				syncRequested = true;
 			}
 		}
 		PotState[] array = pots;
@@ -617,7 +646,7 @@ internal sealed class KeitaPotTracker
 	{
 		if (!syncInFlight && TryBuildContext(out var context))
 		{
-			int num = (hasOnlineData ? 60 : 5);
+			int num = (hasOnlineData || syncTimedOut) ? SyncRefreshSeconds : FastRetrySeconds;
 			if (syncRequested || context.Fingerprint != lastFingerprint || now - lastSyncAt >= num)
 			{
 				lastFingerprint = context.Fingerprint;
@@ -694,6 +723,7 @@ internal sealed class KeitaPotTracker
 				BindTracker(row);
 				QueueSharedPotHistory(shared, context);
 				await PatchPotHistoryAsync(row, context, now, shared);
+				syncTimedOut = false;
 				return;
 			}
 			TrackerRow trackerRow = currentTracker;
@@ -714,7 +744,7 @@ internal sealed class KeitaPotTracker
 					missingFingerprint = context.Fingerprint;
 					missingTrackerChecks = 1;
 				}
-				if (missingTrackerChecks >= 2)
+				if (missingTrackerChecks >= MissingTrackerChecksBeforeCreate)
 				{
 					TrackerRow trackerRow2 = await CreateRowAsync(context, now);
 					if (trackerRow2 != null)
@@ -728,6 +758,12 @@ internal sealed class KeitaPotTracker
 				missingFingerprint = string.Empty;
 				missingTrackerChecks = 0;
 			}
+			syncTimedOut = false;
+		}
+		catch (Exception ex) when (IsHTTPTimeout(ex))
+		{
+			syncTimedOut = true;
+			DLog.Debug("[规划] 同步在线表超时");
 		}
 		catch (Exception ex)
 		{
@@ -944,7 +980,7 @@ internal sealed class KeitaPotTracker
 	{
 		if (!catalogInFlight)
 		{
-			int num = ((hasCatalog && !catalogFetchFailed) ? 60 : 5);
+			int num = catalogTimedOut ? CatalogRefreshSeconds : ((hasCatalog && !catalogFetchFailed) ? CatalogRefreshSeconds : CatalogFastRetrySeconds);
 			if (lastCatalogAt <= 0 || now - lastCatalogAt >= num)
 			{
 				catalogInFlight = true;
@@ -999,7 +1035,13 @@ internal sealed class KeitaPotTracker
 					pendingCatalog = dictionary.Values.ToList();
 				}
 				ok = true;
+				catalogTimedOut = false;
 			}
+		}
+		catch (Exception ex) when (IsHTTPTimeout(ex))
+		{
+			catalogTimedOut = true;
+			DLog.Debug("[规划] 拉取目录超时");
 		}
 		catch (Exception ex)
 		{
@@ -1220,6 +1262,22 @@ internal sealed class KeitaPotTracker
 		{
 			return false;
 		}
+		if (FateReader.IsActive(north.FateID))
+		{
+			kind = PotKind.North;
+			wait = 0;
+			untilGone = OccultTrackerPlanner.FateAliveSeconds;
+			alive = true;
+			return true;
+		}
+		if (FateReader.IsActive(south.FateID))
+		{
+			kind = PotKind.South;
+			wait = 0;
+			untilGone = OccultTrackerPlanner.FateAliveSeconds;
+			alive = true;
+			return true;
+		}
 		if (north.SpawnTime <= 0 && south.SpawnTime <= 0)
 		{
 			return false;
@@ -1382,6 +1440,10 @@ internal sealed class KeitaPotTracker
 		}
 		return stringBuilder.ToString();
 	}
+
+	private static bool IsHTTPTimeout(Exception ex) =>
+		ex is TaskCanceledException or TimeoutException or OperationCanceledException
+		|| ex.InnerException is TimeoutException or TaskCanceledException;
 
 	private static HttpClient CreateClient()
 	{

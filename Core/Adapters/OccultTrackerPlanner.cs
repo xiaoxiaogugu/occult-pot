@@ -46,6 +46,7 @@ internal static class OccultTrackerPlanner
     internal const int InstanceAlignSeconds = 240;
     internal const int FreshUpdateSeconds = 20 * 60;
     internal const int FreshSpawnSeconds = 50 * 60;
+    internal const int LocalStayGraceSeconds = 120;
 
     private const long CycleSeconds = RespawnSeconds * 2;
 
@@ -55,8 +56,8 @@ internal static class OccultTrackerPlanner
         public readonly List<RemoteIslandSnapshot> Rows = [];
     }
 
-    /// <param name="localFateAlive">
-    /// 当前所在岛现场是否有罐 Fate。为 false 时，本岛众包「存活」视为幻影，不当 0 等待。
+    /// <param name="localRunningKind">
+    /// 当前所在岛游戏 Fate 表里正在 Running 的罐。只有这项能标进行中；众包时间窗只用来推下一罐。
     /// </param>
     internal static bool TryPickVisit(
         IReadOnlyList<RemoteIslandSnapshot> islands,
@@ -71,7 +72,7 @@ internal static class OccultTrackerPlanner
         ushort excludePotTerritory = 0,
         PotKind? excludePotKind = null,
         CnDataCenterKind? excludePotDC = null,
-        bool localFateAlive = false,
+        PotKind? localRunningKind = null,
         long localNorthSpawn = 0,
         long localSouthSpawn = 0)
     {
@@ -89,34 +90,44 @@ internal static class OccultTrackerPlanner
                 if (excludeDC is { } skipDC && excludeTerritory != 0 && dc == skipDC && territory == excludeTerritory)
                     continue;
 
-                var preferNorth = currentDC == dc && territory == currentTerritory ? localNorthSpawn : 0;
-                var preferSouth = currentDC == dc && territory == currentTerritory ? localSouthSpawn : 0;
-                if (!TryMergeDCIsland(islands, dc, territory, now, out var merged, preferNorth, preferSouth))
-                    continue;
-                if (!TryComputeCandidate(merged, now, excludePotTerritory, excludePotKind, excludePotDC, dc, out var kind, out var wait, out var untilGone, out var alive))
-                    continue;
-                if (!alive && wait <= 0)
-                    continue;
-
-                var travel = routeWorldID != 0 && currentWorldID != 0 && routeWorldID != currentWorldID;
                 var onThisIsland = currentDC == dc
                     && territory == currentTerritory
                     && ZoneIds.IsSupportedIsland(currentTerritory);
                 var sameDC = currentDC == dc;
                 var travelCost = onThisIsland ? 0 : sameDC ? SameDCHopSeconds : CrossDCBufferSeconds;
+                var travel = routeWorldID != 0 && currentWorldID != 0 && routeWorldID != currentWorldID;
 
-                // 人在岛上但 Fate 没开：众包「进行中」不可打，改成等待成本。
-                if (alive && onThisIsland && !localFateAlive)
+                PotKind kind;
+                int wait;
+                int untilGone;
+                bool alive;
+                if (onThisIsland && localRunningKind is { } running)
                 {
+                    kind = running;
+                    wait = 0;
+                    untilGone = FateAliveSeconds;
+                    alive = true;
+                }
+                else
+                {
+                    var preferNorth = onThisIsland ? localNorthSpawn : 0;
+                    var preferSouth = onThisIsland ? localSouthSpawn : 0;
+                    if (!TryMergeDCIsland(islands, dc, territory, now, out var merged, preferNorth, preferSouth))
+                        continue;
+                    if (!TryComputeCandidate(merged, now, excludePotTerritory, excludePotKind, excludePotDC, dc, out kind, out wait, out untilGone, out alive))
+                        continue;
+
+                    // 众包窗不算 Running。本岛只在窗开头留下等；过后和别处一样改等下一罐。
                     alive = false;
-                    wait = Math.Max(untilGone, AbandonWaitSeconds);
-                    untilGone = wait + FateAliveSeconds;
+                    wait = WaitAfterCrowdWindow(wait, untilGone, onThisIsland);
+                    if (wait > 0)
+                        untilGone = wait + FateAliveSeconds;
                 }
 
                 if (alive && untilGone < (onThisIsland ? SameDCBufferSeconds : travelCost))
                     continue;
 
-                // 赶到才能打：本岛 0，同区换岛 / 跨区分别加 hop。
+                // 赶到才能打：本岛现场 Running 为 0，同区换岛 / 跨区分别加 hop。
                 var eta = alive ? travelCost : Math.Max(wait, travelCost);
                 var travelRank = onThisIsland ? 0 : sameDC ? 1 : 2;
 
@@ -333,28 +344,6 @@ internal static class OccultTrackerPlanner
         untilGoneSeconds = 0;
         alive = false;
 
-        var northUp = IsAlive(island.NorthSpawn, island.NorthDeath, now);
-        var southUp = IsAlive(island.SouthSpawn, island.SouthDeath, now);
-        if (northUp || southUp)
-        {
-            var northLeft = northUp ? (int)Math.Max(0, island.NorthSpawn + FateAliveSeconds - now) : -1;
-            var southLeft = southUp ? (int)Math.Max(0, island.SouthSpawn + FateAliveSeconds - now) : -1;
-            if (northUp && (!southUp || northLeft >= southLeft))
-            {
-                kind = PotKind.North;
-                untilGoneSeconds = northLeft;
-            }
-            else
-            {
-                kind = PotKind.South;
-                untilGoneSeconds = southLeft;
-            }
-
-            waitSeconds = 0;
-            alive = true;
-            return untilGoneSeconds > 0;
-        }
-
         if (!TryLastSpawn(island, out var lastSpawn, out var lastNorth))
             return false;
 
@@ -364,6 +353,16 @@ internal static class OccultTrackerPlanner
             waitSeconds = (int)(lastSpawn - now);
             untilGoneSeconds = waitSeconds + FateAliveSeconds;
             return waitSeconds > 0;
+        }
+
+        var lastDeath = lastNorth ? island.NorthDeath : island.SouthDeath;
+        var lastDead = lastDeath > lastSpawn && lastDeath - lastSpawn >= 180;
+        if (!lastDead && now < lastSpawn + FateAliveSeconds)
+        {
+            kind = lastNorth ? PotKind.North : PotKind.South;
+            waitSeconds = 0;
+            untilGoneSeconds = (int)(lastSpawn + FateAliveSeconds - now);
+            return untilGoneSeconds > 0;
         }
 
         var spawn = lastSpawn;
@@ -380,7 +379,6 @@ internal static class OccultTrackerPlanner
                 kind = isNorth ? PotKind.North : PotKind.South;
                 waitSeconds = (int)(spawn - now);
                 untilGoneSeconds = waitSeconds + FateAliveSeconds;
-                alive = false;
                 return true;
             }
 
@@ -389,7 +387,6 @@ internal static class OccultTrackerPlanner
                 kind = isNorth ? PotKind.North : PotKind.South;
                 waitSeconds = 0;
                 untilGoneSeconds = (int)(spawn + FateAliveSeconds - now);
-                alive = true;
                 return untilGoneSeconds > 0;
             }
         }
@@ -412,8 +409,21 @@ internal static class OccultTrackerPlanner
         if (alive)
             return $"{label}进行中 剩{FormatMmSs(untilGone)}";
         if (wait <= 0)
-            return $"{label}数据过期";
+            return $"{label}即将刷新";
         return $"下个{label} {FormatMmSs(wait)}";
+    }
+
+    /// <summary>
+    ///     窗内但没 Running：开头两分钟 wait=0 留下；过后按下一罐算，避免钉死不换线。
+    /// </summary>
+    internal static int WaitAfterCrowdWindow(int wait, int untilGone, bool stayIfEarly)
+    {
+        if (wait > 0)
+            return wait;
+        if (stayIfEarly && untilGone > FateAliveSeconds - LocalStayGraceSeconds)
+            return 0;
+        var next = untilGone + (int)(RespawnSeconds - FateAliveSeconds);
+        return next > 0 ? next : (int)RespawnSeconds;
     }
 
     internal static string FormatMmSs(int seconds)
@@ -576,14 +586,5 @@ internal static class OccultTrackerPlanner
         }
 
         return last;
-    }
-
-    private static bool IsAlive(long spawn, long death, long now)
-    {
-        if (spawn <= 0 || spawn > now)
-            return false;
-        if (death > spawn && death - spawn >= 180)
-            return false;
-        return now < spawn + FateAliveSeconds;
     }
 }
