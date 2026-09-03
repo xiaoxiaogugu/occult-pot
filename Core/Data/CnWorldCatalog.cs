@@ -68,6 +68,28 @@ internal static class CnWorldCatalog
         return sample.RowId == 0 ? 0 : sample.DataCenter.RowId;
     }
 
+    // infi.ovh 国服大区号，和国服客户端 Lumina（1/2/3/8）不是同一套
+    internal static CnDataCenterKind? KindForTrackerDataCenterID(uint dcID) =>
+        dcID switch
+        {
+            101 => CnDataCenterKind.Chocobo,
+            102 => CnDataCenterKind.Moogle,
+            103 => CnDataCenterKind.Cat,
+            104 => CnDataCenterKind.Atomos,
+            _   => null,
+        };
+
+    internal static CnDataCenterKind? KindForTrackerRow(uint datacenter, uint server)
+    {
+        if (KindForWorldID(server) is { } byWorld)
+            return byWorld;
+        if (KindForTrackerDataCenterID(datacenter) is { } byTracker)
+            return byTracker;
+        if (server != 0)
+            return null;
+        return KindForDataCenterID(datacenter);
+    }
+
     internal static CnDataCenterKind? KindForDataCenterID(uint dcID)
     {
         if (dcID == 0)
@@ -78,20 +100,6 @@ internal static class CnWorldCatalog
             var sample = WorldsFor(kind).FirstOrDefault();
             if (sample.RowId != 0 && sample.DataCenter.RowId == dcID)
                 return kind;
-        }
-
-        try
-        {
-            var name = GameState.HomeDataCenterData.Name.ToString();
-            foreach (var (kind, dcName, _) in All)
-            {
-                if (string.Equals(name, dcName, StringComparison.Ordinal))
-                    return kind;
-            }
-        }
-        catch
-        {
-            // ignored
         }
 
         return null;

@@ -72,9 +72,17 @@ internal sealed class PotSessionOrchestrator
 
     private PotKind? plannedKind;
 
+    private uint committedWorldID;
+
     private CnDataCenterKind? skippedDC;
 
     private ushort skippedTerritory;
+
+    private CnDataCenterKind? completedDC;
+
+    private PotKind? completedKind;
+
+    private ushort completedTerritory;
 
     private DateTime? campIdleSinceUTC;
 
@@ -87,6 +95,8 @@ internal sealed class PotSessionOrchestrator
     private const double CampReturnIdleGiveUpSeconds = 8.0;
 
     private const double PlanWaitSeconds = 10.0;
+
+    private const double LocalReconcileWaitSeconds = 8.0;
 
     internal SessionPhase Phase => phase;
 
@@ -120,29 +130,65 @@ internal sealed class PotSessionOrchestrator
 
     internal PotKind? ActiveKind => activeLayout?.Kind;
 
+    internal bool TryGetCurrentTargetLabel(out string label)
+    {
+        label = string.Empty;
+        if (!TryGetCurrentVisit(out var dc, out var territory, out var kind, out var worldID))
+            return false;
+
+        var onTargetIsland = ZoneIds.IsSupportedIsland((ushort)GameState.TerritoryType)
+            && (ushort)GameState.TerritoryType == territory;
+
+        // 已进目标岛：现场 Fate / 本地推算优先。
+        if (onTargetIsland
+            && tracker.TryGetLocalPreferred(territory, out var localKind, out var localWait, out var localGone, out var localAlive))
+        {
+            kind = localKind;
+            plannedKind = localKind;
+            committedWorldID = CnWorldCatalog.CurrentWorldID;
+            label = SessionBriefFormatter.FormatVisitShort(dc, committedWorldID, territory, kind, localAlive, localWait, localGone);
+            return true;
+        }
+
+        if (tracker.TryGetNextTiming(dc, territory, out var nextKind, out var wait, out var untilGone, out var alive))
+        {
+            // 等罐中却显示「进行中」：众包存活窗与现场 Fate 不一致时，不当存活展示。
+            if (onTargetIsland
+                && alive
+                && phase == SessionPhase.WaitFight
+                && activeLayout != null
+                && !FateReader.IsActive(activeLayout.FateID))
+            {
+                var other = IslandPotLayout.ByKind(territory, activeLayout.Kind == PotKind.North ? PotKind.South : PotKind.North);
+                if (other == null || !FateReader.IsActive(other.FateID))
+                {
+                    alive = false;
+                    wait = Math.Max(untilGone, OccultTrackerPlanner.AbandonWaitSeconds);
+                }
+            }
+
+            label = SessionBriefFormatter.FormatVisitShort(dc, worldID, territory, nextKind, alive, wait, untilGone);
+            return true;
+        }
+
+        label = SessionBriefFormatter.FormatVisitShort(dc, worldID, territory, kind);
+        return true;
+    }
+
     internal bool TryGetNextTargetLabel(out string label)
     {
         label = string.Empty;
         var worlds = route.GetEnabled(getConfig());
-        if (worlds.Count == 0)
+        if (worlds.Count == 0 || !TryGetCurrentVisit(out var dc, out var territory, out var kind, out _))
             return false;
 
         var currentWorldID = CnWorldCatalog.CurrentWorldID;
         var currentTerritory = (ushort)GameState.TerritoryType;
-        if (TryGetCurrentPotTarget(out var potTerritory, out var potKind, out var potDC)
-            && tracker.TryPickNextVisit(worlds, currentWorldID, currentTerritory, out var nextVisit, skippedTerritory, skippedDC, potTerritory, potKind, potDC))
-        {
-            label = SessionBriefFormatter.FormatVisitShort(nextVisit);
-            return true;
-        }
+        if (!tracker.TryPickNextVisit(worlds, currentWorldID, currentTerritory, out var nextVisit, skippedTerritory, skippedDC, territory, kind, dc))
+            return false;
 
-        if (tracker.TryPickVisit(worlds, currentWorldID, currentTerritory, out var visit, skippedTerritory, skippedDC))
-        {
-            label = SessionBriefFormatter.FormatVisitShort(visit);
-            return true;
-        }
-
-        return false;
+        label = SessionBriefFormatter.FormatVisitShort(nextVisit);
+        return true;
     }
 
     internal string RouteSummary { get; private set; } = string.Empty;
@@ -214,12 +260,12 @@ internal sealed class PotSessionOrchestrator
             targetTerritory = territoryID;
             plannedKind = null;
             BeginIslandVisit();
+            return;
         }
-        else
-        {
-            Enter(SessionPhase.PlanRoute, RuntimeStatus.Of(RuntimeStatusCode.Plan_OutsidePick));
+
+        Enter(SessionPhase.PlanRoute, RuntimeStatus.Of(RuntimeStatusCode.Plan_OutsidePick));
+        if (!tracker.HasCatalog)
             tracker.ForceCatalogRefresh();
-        }
     }
 
     private void TickPrepareEntry()
@@ -284,7 +330,7 @@ internal sealed class PotSessionOrchestrator
         taskHelper.Abort();
         find.Stop();
         vnav.Stop();
-        tracker.Reset();
+        tracker.ResetIsland();
         IslandLeave.Reset();
         BmrAi.ForceOff();
         if (dig.IsActive)
@@ -302,9 +348,11 @@ internal sealed class PotSessionOrchestrator
         fateWaitDismountIssued = false;
         campIdleSinceUTC       = null;
         plannedKind            = null;
+        committedWorldID       = 0;
         targetTerritory        = 0;
         afterLeave             = AfterLeave.Advance;
         ClearSkippedIsland();
+        ClearCompletedPot();
         PartyInviteActions.Reset();
     }
 
@@ -344,6 +392,7 @@ internal sealed class PotSessionOrchestrator
             return;
         }
 
+        RememberCompletedPot();
         leaveAfterDig = true;
         BeginLeave(RuntimeStatus.Of(RuntimeStatusCode.Leave_DigDone));
     }
@@ -363,6 +412,7 @@ internal sealed class PotSessionOrchestrator
         {
             DLog.Error("[规划] Tracker.Tick 失败", ex);
         }
+        PartyInviteActions.TickLeave();
         if (!TickLeaveGuards())
         {
             TrySwitchJobsInBackground();
@@ -427,15 +477,18 @@ internal sealed class PotSessionOrchestrator
 
     private bool TryCommitOnlinePlan()
     {
-        if (!tracker.TryPickVisit(route.Slots, CnWorldCatalog.CurrentWorldID, (ushort)GameState.TerritoryType, out var visit, skippedTerritory, skippedDC))
+        if (!tracker.TryPickVisit(route.Slots, CnWorldCatalog.CurrentWorldID, (ushort)GameState.TerritoryType, out var visit, skippedTerritory, skippedDC, completedTerritory, completedKind, completedDC))
             return false;
         if (!route.TryFindVisit(visit, out var index))
             return false;
 
         ClearSkippedIsland();
+        if (completedKind.HasValue && (visit.DC != completedDC || visit.Territory != completedTerritory))
+            ClearCompletedPot();
         route.Index     = index;
         targetTerritory = visit.Territory;
         plannedKind     = visit.Kind;
+        committedWorldID = visit.WorldID;
         RouteSummary    = visit.Reason;
         ExternalCommands.Echo("[规划] " + visit.Reason);
         EnterEnsureWorldForCurrentSlot(visit.Reason);
@@ -493,6 +546,11 @@ internal sealed class PotSessionOrchestrator
             status = RuntimeStatus.Of(RuntimeStatusCode.Enter_WaitPlayer);
             return;
         }
+        if (PlayerReader.IsTransitionLocked())
+        {
+            status = RuntimeStatus.Of(RuntimeStatusCode.Enter_WaitBetweenAreas);
+            return;
+        }
         if (!PlayerReader.Position.HasValue)
         {
             status = RuntimeStatus.Of(RuntimeStatusCode.Enter_WaitPosition);
@@ -513,7 +571,28 @@ internal sealed class PotSessionOrchestrator
         {
             DLog.Error("[会话] 关闭 BMR 失败", ex);
         }
+
+        enteredIslandUTC ??= DateTime.UtcNow;
+        if (!HasPotReward() && !LocalReconcileReady())
+        {
+            var left = Math.Max(0, LocalReconcileWaitSeconds - (DateTime.UtcNow - enteredIslandUTC.Value).TotalSeconds);
+            status = RuntimeStatus.Of(RuntimeStatusCode.Find_WaitLocal, (int)Math.Ceiling(left));
+            return;
+        }
+
         DispatchIslandWork();
+    }
+
+    /// <summary>
+    /// 进岛后按实际 CurrentWorld（众包 server）核对本访侧；不在此处退岛。
+    /// </summary>
+    private void RebindCommittedVisit()
+    {
+        tracker.DecideIslandRebind(plannedKind, out var kind, out _, out _, out _);
+        var actualWorld = CnWorldCatalog.CurrentWorldID;
+        if (actualWorld != 0)
+            committedWorldID = actualWorld;
+        plannedKind = kind;
     }
 
     private void DispatchIslandWork()
@@ -521,25 +600,32 @@ internal sealed class PotSessionOrchestrator
         if (HasPotReward())
         {
             BeginDig(waitCamp: false);
+            return;
         }
-        else
-        {
-            BeginFind();
-        }
+
+        RebindCommittedVisit();
+        if (TryLeaveForSoonerVisit())
+            return;
+        BeginFind();
+    }
+
+    private bool LocalReconcileReady()
+    {
+        if (tracker.HasTrustedLocal(targetTerritory))
+            return true;
+        enteredIslandUTC ??= DateTime.UtcNow;
+        return (DateTime.UtcNow - enteredIslandUTC.Value).TotalSeconds >= LocalReconcileWaitSeconds;
     }
 
     private void BeginFind()
     {
-        PotKind? potKind = plannedKind;
-        plannedKind = null;
+        // 保留 plannedKind：Find 期间当前目标不重新选罐。
         Enter(SessionPhase.FindPot, RuntimeStatus.Of(RuntimeStatusCode.Find_StartOnline));
         try
         {
-            find.Start(targetTerritory, potKind);
+            find.Start(targetTerritory, plannedKind);
             if (!find.Status.IsNone)
-            {
                 status = find.Status;
-            }
         }
         catch (Exception ex)
         {
@@ -565,7 +651,7 @@ internal sealed class PotSessionOrchestrator
 
     private bool IsIslandEntryReady(bool requireCamp, out RuntimeStatus status)
     {
-        if (PlayerReader.IsBetweenAreas() || !PlayerReader.IsAvailable())
+        if (PlayerReader.IsTransitionLocked() || !PlayerReader.IsAvailable())
         {
             status = RuntimeStatus.Of(RuntimeStatusCode.Enter_WaitBetweenAreas);
             return false;
@@ -610,6 +696,9 @@ internal sealed class PotSessionOrchestrator
             return;
         }
 
+        if (TryLeaveForSoonerVisit())
+            return;
+
         find.Tick();
         status = find.Status;
         if (find.IsDone && find.Chosen != null)
@@ -644,13 +733,21 @@ internal sealed class PotSessionOrchestrator
         }
         if (!sawFateActive)
         {
-            PotKind kind = ((potSideLayout.Kind == PotKind.North) ? PotKind.South : PotKind.North);
-            PotSideLayout potSideLayout2 = IslandPotLayout.ByKind(targetTerritory, kind);
-            if (potSideLayout2 != null && FateReader.IsActive(potSideLayout2.FateID))
+            if (FateReader.IsActive(potSideLayout.FateID))
             {
-                ExternalCommands.Echo("[找罐] 本地校准：" + potSideLayout2.KindLabel + " FATE 进行中，改去 " + potSideLayout2.KindLabel);
-                CorrectFightSide(potSideLayout2.Kind);
-                return;
+                sawFateActive = true;
+                BmrAi.On();
+            }
+            else
+            {
+                PotKind kind = potSideLayout.Kind == PotKind.North ? PotKind.South : PotKind.North;
+                PotSideLayout potSideLayout2 = IslandPotLayout.ByKind(targetTerritory, kind);
+                if (potSideLayout2 != null && FateReader.IsActive(potSideLayout2.FateID))
+                {
+                    ExternalCommands.Echo("[找罐] 本地校准：" + potSideLayout2.KindLabel + " FATE 进行中，改去 " + potSideLayout2.KindLabel);
+                    CorrectFightSide(potSideLayout2.Kind);
+                    return;
+                }
             }
         }
         if (!sawFateActive && PlayerReader.IsOnMount() && !fateWaitDismountIssued)
@@ -694,11 +791,63 @@ internal sealed class PotSessionOrchestrator
         {
             BeginLeave(RuntimeStatus.Of(RuntimeStatusCode.Leave_FateTimeout));
         }
+        else if (TryLeaveForSoonerVisit())
+        {
+            return;
+        }
         else
         {
             TryAcceptPartyIfEnabled();
             status = RuntimeStatus.Of(RuntimeStatusCode.Fight_WaitFate, activeLayout.KindLabel);
         }
+    }
+
+    /// <summary>
+    /// 本地数据就绪后再和四区比：本岛对侧只改侧，别处更近才退岛。
+    /// </summary>
+    private bool TryLeaveForSoonerVisit()
+    {
+        if (KeitaPotTracker.IsLocalFateAlive(targetTerritory))
+            return false;
+        if (!LocalReconcileReady())
+            return false;
+        if (!TryResolveRouteDC(out var dc))
+            return false;
+
+        var worlds = route.GetEnabled(getConfig());
+        if (worlds.Count == 0)
+            return false;
+
+        if (!tracker.TryPickVisit(
+                worlds,
+                CnWorldCatalog.CurrentWorldID,
+                (ushort)GameState.TerritoryType,
+                out var best,
+                skippedTerritory,
+                skippedDC,
+                completedTerritory,
+                completedKind,
+                completedDC))
+            return false;
+
+        if (best.DC == dc && best.Territory == targetTerritory)
+        {
+            var kind = activeLayout?.Kind ?? plannedKind;
+            if (!kind.HasValue || best.Kind == kind.Value)
+                return false;
+
+            ExternalCommands.Echo("[规划] 本地核对：" + best.Reason);
+            plannedKind = best.Kind;
+            if (phase == SessionPhase.WaitFight)
+                CorrectFightSide(best.Kind);
+            else if (phase == SessionPhase.FindPot)
+                find.ForceTravelTo(best.Kind);
+            return false;
+        }
+
+        afterLeave = AfterLeave.Advance;
+        BeginLeave(RuntimeStatus.Of(RuntimeStatusCode.WorldTravel_NextReplan));
+        return true;
     }
 
     private void TryAcceptPartyIfEnabled()
@@ -777,6 +926,7 @@ internal sealed class PotSessionOrchestrator
             vnav.Stop();
             BmrAi.Off();
             activeLayout = potSideLayout;
+            plannedKind = kind;
             sawFateActive = FateReader.IsActive(potSideLayout.FateID);
             rewardPollUntilUTC = null;
             PartyInviteActions.Reset();
@@ -908,6 +1058,8 @@ internal sealed class PotSessionOrchestrator
 
     private void AdvanceAfterLeave()
     {
+        plannedKind  = null;
+        activeLayout = null;
         IslandLeave.Reset();
         Enter(SessionPhase.PlanRoute, RuntimeStatus.Of(RuntimeStatusCode.Plan_NextIsland));
         tracker.ForceCatalogRefresh();
@@ -926,16 +1078,33 @@ internal sealed class PotSessionOrchestrator
         skippedTerritory = 0;
     }
 
+    private void RememberCompletedPot()
+    {
+        var kind = activeLayout?.Kind ?? plannedKind;
+        if (!kind.HasValue)
+            return;
+
+        completedKind      = kind;
+        completedTerritory = targetTerritory != 0 ? targetTerritory : (ushort)GameState.TerritoryType;
+        TryResolveRouteDC(out var dc);
+        completedDC        = dc;
+    }
+
+    private void ClearCompletedPot()
+    {
+        completedDC        = null;
+        completedKind      = null;
+        completedTerritory = 0;
+    }
+
     private void Enter(SessionPhase phase, RuntimeStatus status)
     {
-        SessionPhase num = this.phase;
-        this.phase = phase;
+        var previous = this.phase;
+        this.phase   = phase;
         phaseStartedUTC = DateTime.UtcNow;
-        this.status = status;
-        if (num != phase)
-        {
+        this.status  = status;
+        if (previous != phase)
             OnPhaseEntered(phase);
-        }
     }
 
     private void OnPhaseEntered(SessionPhase entered)
@@ -1148,11 +1317,35 @@ internal sealed class PotSessionOrchestrator
         Enter(SessionPhase.Failed, status);
     }
 
-    private bool TryGetCurrentPotTarget(out ushort territory, out PotKind kind, out CnDataCenterKind dc)
+    private bool TryGetCurrentVisit(out CnDataCenterKind dc, out ushort territory, out PotKind kind, out uint worldID)
+    {
+        if (TryGetCurrentPotTarget(out territory, out kind, out dc, out worldID))
+            return true;
+
+        var worlds = route.GetEnabled(getConfig());
+        if (worlds.Count == 0
+            || !tracker.TryPickVisit(worlds, CnWorldCatalog.CurrentWorldID, (ushort)GameState.TerritoryType, out var visit, skippedTerritory, skippedDC, completedTerritory, completedKind, completedDC))
+        {
+            dc        = default;
+            territory = 0;
+            kind      = PotKind.North;
+            worldID   = 0;
+            return false;
+        }
+
+        dc        = visit.DC;
+        territory = visit.Territory;
+        kind      = visit.Kind;
+        worldID   = visit.WorldID;
+        return true;
+    }
+
+    private bool TryGetCurrentPotTarget(out ushort territory, out PotKind kind, out CnDataCenterKind dc, out uint worldID)
     {
         territory = 0;
         kind = PotKind.North;
         dc = default;
+        worldID = committedWorldID;
         if (!IsRunning)
             return false;
 
@@ -1160,6 +1353,17 @@ internal sealed class PotSessionOrchestrator
         {
             territory = targetTerritory;
             kind = activeLayout.Kind;
+            if (worldID == 0)
+                worldID = CnWorldCatalog.CurrentWorldID;
+            return TryResolveRouteDC(out dc);
+        }
+
+        if (phase == SessionPhase.FindPot && find.ChosenKind is { } finding && targetTerritory != 0)
+        {
+            territory = targetTerritory;
+            kind      = finding;
+            if (worldID == 0)
+                worldID = CnWorldCatalog.CurrentWorldID;
             return TryResolveRouteDC(out dc);
         }
 
@@ -1167,6 +1371,8 @@ internal sealed class PotSessionOrchestrator
         {
             territory = targetTerritory;
             kind = plannedKind.Value;
+            if (worldID == 0 && route.Count > 0)
+                worldID = route.Current.WorldID;
             return TryResolveRouteDC(out dc);
         }
 

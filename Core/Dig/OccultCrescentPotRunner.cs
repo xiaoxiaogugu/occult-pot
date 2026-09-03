@@ -27,6 +27,7 @@ internal sealed class OccultCrescentPotRunner
     private bool elixirSent;
     private bool waypointElixirSent;
     private bool awaitingContinuation;
+    private bool continuationReady;
     private bool foundTreasure;
     private bool lureAcquired;
     private bool lureExhausted;
@@ -37,9 +38,10 @@ internal sealed class OccultCrescentPotRunner
     private uint startTerritory;
     private string? lastTalkLine;
 
-    private const double CandidateDwellSeconds     = 4.0;
-    private const double TreasureSpawnWaitSeconds  = 20.0;
-    private const double ChestGoneSettleSeconds    = 1.0;
+    private const double CandidateDwellSeconds           = 4.0;
+    private const double TreasureSpawnWaitSeconds        = 20.0;
+    private const double ChestGoneSettleSeconds          = 1.0;
+    private const double ContinuationElixirDelaySeconds  = 8.0;
     private const float ChestDetectRange           = 12f;
     private const float ChestOpenRange             = 5f;
 
@@ -116,6 +118,7 @@ internal sealed class OccultCrescentPotRunner
     {
         if (!IsActive)
             return;
+        hooks.Tick();
         if (hooks.TerritoryID != startTerritory)
         {
             Fail(RuntimeStatusCode.Dig_TerritoryChanged, StopReason.TerritoryChanged);
@@ -159,7 +162,16 @@ internal sealed class OccultCrescentPotRunner
                     break;
                 case PotChatEventType.MoreMedicine:
                     awaitingContinuation = true;
+                    continuationReady    = false;
                     hooks.PreferRerollChests();
+                    break;
+                case PotChatEventType.ContinuationReady:
+                    awaitingContinuation = true;
+                    continuationReady    = true;
+                    break;
+                case PotChatEventType.ElixirRejected:
+                    elixirSent   = false;
+                    elixirUsedAt = null;
                     break;
                 case PotChatEventType.Farewell:
                     farewellPending = true;
@@ -219,11 +231,17 @@ internal sealed class OccultCrescentPotRunner
             sawRewardBuff = true;
         }
 
+        if (PlayerReader.IsBusy())
+            return;
+
+        // 续罐要等「能够告知第二处」；开箱动画里喝会被系统拒掉。
+        if (awaitingContinuation && !continuationReady && nowSeconds - phaseStarted < ContinuationElixirDelaySeconds)
+            return;
+
         TryRepeatElixir(nowSeconds);
         if (elixirUsedAt is { } usedAt && nowSeconds - usedAt >= 1.2)
         {
             awaitingContinuation = false;
-            TryMountForGreenTravel();
             ResumeHuntOrWaitHint(nowSeconds);
             return;
         }
@@ -464,6 +482,8 @@ internal sealed class OccultCrescentPotRunner
 
     private void TryRepeatElixir(double nowSeconds)
     {
+        if (PlayerReader.IsBusy())
+            return;
         if ((elixirSent && status != OccultPotStatus.WaitingMedicine) || !hooks.TryUseElixir())
             return;
 
@@ -545,6 +565,7 @@ internal sealed class OccultCrescentPotRunner
         chestWaitUntil       = null;
         chestGoneAt          = null;
         awaitingContinuation = false;
+        continuationReady    = false;
         foundTreasure        = false;
         lureAcquired         = false;
         lureExhausted        = false;

@@ -7,7 +7,12 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $toolsRoot = Split-Path -Parent $root
 $distPlugin = Join-Path $root "dist\OccultPot"
 $localTest = Join-Path $toolsRoot "OccultPot-refactor-out"
-$zipPath = Join-Path $toolsRoot "OccultPot-v2.0.4.zip"
+$csproj = Get-Content (Join-Path $root "OccultPotPlugin.csproj") -Raw
+if ($csproj -notmatch "<Version>([^<]+)</Version>") {
+    throw "csproj 里没有 Version"
+}
+$version = $Matches[1].Trim()
+$zipPath = Join-Path $toolsRoot "OccultPot-v$version.zip"
 $zipLatest = Join-Path $root "dist\latest.zip"
 
 dotnet build (Join-Path $root "OccultPotPlugin.csproj") -c $Configuration

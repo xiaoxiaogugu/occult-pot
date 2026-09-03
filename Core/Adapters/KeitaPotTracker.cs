@@ -27,6 +27,8 @@ internal sealed class KeitaPotTracker
 
 		public ushort Datacenter;
 
+		public uint Server;
+
 		public uint Territory;
 
 		public uint FateID;
@@ -260,7 +262,7 @@ internal sealed class KeitaPotTracker
 
 	private RuntimeStatus statusLine = RuntimeStatus.Of(RuntimeStatusCode.Tracker_NotStarted);
 
-	private readonly Dictionary<(CnDataCenterKind Dc, ushort Territory), RemoteIslandSnapshot> remote = new Dictionary<(CnDataCenterKind, ushort), RemoteIslandSnapshot>();
+	private readonly Dictionary<(CnDataCenterKind Dc, ushort Territory, uint WorldID), RemoteIslandSnapshot> remote = new();
 
 	private List<RemoteIslandSnapshot>? pendingCatalog;
 
@@ -339,26 +341,90 @@ internal sealed class KeitaPotTracker
 	{
 		kind = PotKind.North;
 		reason = string.Empty;
-		CnDataCenterKind? cnDataCenterKind = CnWorldCatalog.KindForWorldID(CnWorldCatalog.CurrentWorldID) ?? CnWorldCatalog.KindForDataCenterID(GameState.CurrentDataCenter);
-		if (!cnDataCenterKind.HasValue)
-		{
+		var dc = CnWorldCatalog.KindForWorldID(CnWorldCatalog.CurrentWorldID) ?? CnWorldCatalog.KindForDataCenterID(GameState.CurrentDataCenter);
+		if (!dc.HasValue || !TryGetDCIslandTiming(dc.Value, territory, out kind, out var waitSeconds, out var untilGoneSeconds, out var alive))
 			return false;
-		}
-		RemoteIslandSnapshot value;
-		lock (syncLock)
-		{
-			if (!remote.TryGetValue((cnDataCenterKind.Value, territory), out value))
-			{
-				return false;
-			}
-		}
-		long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-		if (!OccultTrackerPlanner.TryComputeNext(value, now, out kind, out var waitSeconds, out var untilGoneSeconds, out var alive))
-		{
-			return false;
-		}
 		reason = OccultTrackerPlanner.FormatTarget(kind, waitSeconds, untilGoneSeconds, alive);
 		return true;
+	}
+
+	internal bool TryGetIslandByWorld(uint worldID, ushort territory, out RemoteIslandSnapshot island)
+	{
+		island = default;
+		if (worldID == 0)
+			return false;
+		var dc = CnWorldCatalog.KindForWorldID(worldID);
+		if (!dc.HasValue)
+			return false;
+		lock (syncLock)
+			return remote.TryGetValue((dc.Value, territory, worldID), out island);
+
+	}
+
+	internal bool TryGetNextTiming(CnDataCenterKind dc, ushort territory, out PotKind kind, out int wait, out int untilGone, out bool alive) =>
+		TryGetDCIslandTiming(dc, territory, out kind, out wait, out untilGone, out alive);
+
+	internal bool TryGetDCIslandTiming(CnDataCenterKind dc, ushort territory, out PotKind kind, out int wait, out int untilGone, out bool alive)
+	{
+		kind = PotKind.North;
+		wait = int.MaxValue;
+		untilGone = 0;
+		alive = false;
+		var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+		if (!TryGetMergedDCIsland(dc, territory, now, out var island))
+			return false;
+		return OccultTrackerPlanner.TryComputeNext(island, now, out kind, out wait, out untilGone, out alive);
+	}
+
+	internal CrowdRebindAction DecideIslandRebind(PotKind? committedKind, out PotKind kind, out int wait, out int untilGone, out bool alive)
+	{
+		kind = committedKind ?? PotKind.North;
+		wait = int.MaxValue;
+		untilGone = 0;
+		alive = false;
+		var territory = (ushort)GameState.TerritoryType;
+		if (!ZoneIds.IsSupportedIsland(territory))
+			return CrowdRebindAction.Abandon;
+
+		var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+		var northAlive = false;
+		var southAlive = false;
+		if (TryGetCurrentPots(territory, out var north, out var south))
+		{
+			northAlive = north.Alive;
+			southAlive = south.Alive;
+		}
+
+		var dc = CnWorldCatalog.KindForWorldID(CnWorldCatalog.CurrentWorldID) ?? CnWorldCatalog.KindForDataCenterID(GameState.CurrentDataCenter);
+		if (!dc.HasValue)
+			return CrowdRebindAction.Abandon;
+
+		TryGetMergedDCIsland(dc.Value, territory, now, out var bound);
+		RemoteIslandSnapshot? boundOrNull = bound.LastUpdate != 0 || bound.NorthSpawn > 0 || bound.SouthSpawn > 0
+			? bound
+			: null;
+		return OccultTrackerPlanner.DecideRebind(
+			committedKind, northAlive, southAlive, boundOrNull, now,
+			out kind, out wait, out untilGone, out alive);
+	}
+
+	internal bool TryGetLocalPreferred(ushort territory, out PotKind kind, out int wait, out int untilGone, out bool alive)
+	{
+		kind = PotKind.North;
+		wait = int.MaxValue;
+		untilGone = 0;
+		alive = false;
+		var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+		if (!LocalPredictionTrusted(territory, now))
+			return false;
+		return TryLocalCompute(territory, now, out kind, out wait, out untilGone, out alive);
+	}
+
+	internal bool HasTrustedLocal(ushort territory)
+	{
+		if (IsLocalFateAlive(territory))
+			return true;
+		return LocalPredictionTrusted(territory, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
 	}
 
 	internal bool TryGetSoonestTarget(ushort territory, out PotKind kind, out string reason)
@@ -366,42 +432,52 @@ internal sealed class KeitaPotTracker
 		kind = PotKind.North;
 		reason = string.Empty;
 		long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-		bool flag = TryCatalogCompute(territory, now, out var kind2, out var wait, out var untilGone, out var alive);
-		bool flag2 = TryLocalCompute(territory, now, out var kind3, out var wait2, out var untilGone2, out var alive2);
-		if (flag2 & alive2)
+		var hasCatalog = TryCatalogCompute(territory, now, out var catalogKind, out var catalogWait, out var catalogGone, out var catalogAlive);
+		var hasLocal = TryLocalCompute(territory, now, out var localKind, out var localWait, out var localGone, out var localAlive);
+		if (hasLocal && localAlive)
 		{
-			kind = kind3;
-			reason = "本地 " + OccultTrackerPlanner.FormatTarget(kind3, wait2, untilGone2, alive2);
+			kind = localKind;
+			reason = "本地 " + OccultTrackerPlanner.FormatTarget(localKind, localWait, localGone, localAlive);
 			return true;
 		}
-		if (flag2 && LocalPredictionTrusted(territory, now))
+		if (hasLocal && LocalPredictionTrusted(territory, now))
 		{
-			kind = kind3;
-			reason = "本地 " + OccultTrackerPlanner.FormatTarget(kind3, wait2, untilGone2, alive2);
+			kind = localKind;
+			reason = "本地 " + OccultTrackerPlanner.FormatTarget(localKind, localWait, localGone, localAlive);
 			return true;
 		}
-		if (flag)
+		if (hasCatalog)
 		{
-			kind = kind2;
-			reason = "在线表 " + OccultTrackerPlanner.FormatTarget(kind2, wait, untilGone, alive);
+			kind = catalogKind;
+			reason = "在线表 " + OccultTrackerPlanner.FormatTarget(catalogKind, catalogWait, catalogGone, catalogAlive);
 			return true;
 		}
-		if (flag2)
+		if (hasLocal)
 		{
-			kind = kind3;
-			reason = "本地 " + OccultTrackerPlanner.FormatTarget(kind3, wait2, untilGone2, alive2);
+			kind = localKind;
+			reason = "本地 " + OccultTrackerPlanner.FormatTarget(localKind, localWait, localGone, localAlive);
 			return true;
 		}
 		return false;
 	}
 
-	internal bool TryPickVisit(IReadOnlyList<(CnDataCenterKind Kind, uint WorldID)> worlds, uint currentWorldID, ushort currentTerritory, out PlannedPotVisit visit, ushort excludeTerritory = 0, CnDataCenterKind? excludeDC = null)
+	internal bool TryPickVisit(
+		IReadOnlyList<(CnDataCenterKind Kind, uint WorldID)> worlds,
+		uint currentWorldID,
+		ushort currentTerritory,
+		out PlannedPotVisit visit,
+		ushort excludeTerritory = 0,
+		CnDataCenterKind? excludeDC = null,
+		ushort excludePotTerritory = 0,
+		PotKind? excludePotKind = null,
+		CnDataCenterKind? excludePotDC = null)
 	{
 		List<RemoteIslandSnapshot> islands;
 		lock (syncLock)
 		{
 			islands = remote.Values.ToList();
 		}
+		TryLocalSpawns(currentTerritory, out var localNorth, out var localSouth);
 		return OccultTrackerPlanner.TryPickVisit(
 			islands,
 			worlds,
@@ -411,7 +487,13 @@ internal sealed class KeitaPotTracker
 			CnWorldCatalog.KindForWorldID(currentWorldID) ?? CnWorldCatalog.KindForDataCenterID(GameState.CurrentDataCenter),
 			out visit,
 			excludeTerritory,
-			excludeDC);
+			excludeDC,
+			excludePotTerritory,
+			excludePotKind,
+			excludePotDC,
+			IsLocalFateAlive(currentTerritory),
+			localNorth,
+			localSouth);
 	}
 
 	internal bool TryPickNextVisit(
@@ -430,6 +512,7 @@ internal sealed class KeitaPotTracker
 		{
 			islands = remote.Values.ToList();
 		}
+		TryLocalSpawns(currentTerritory, out var localNorth, out var localSouth);
 		return OccultTrackerPlanner.TryPickVisit(
 			islands,
 			worlds,
@@ -442,7 +525,20 @@ internal sealed class KeitaPotTracker
 			excludeDC,
 			excludePotTerritory,
 			excludePotKind,
-			excludePotDC);
+			excludePotDC,
+			IsLocalFateAlive(currentTerritory),
+			localNorth,
+			localSouth);
+	}
+
+	internal static bool IsLocalFateAlive(ushort territory)
+	{
+		if (!ZoneIds.IsSupportedIsland(territory) || (ushort)GameState.TerritoryType != territory)
+			return false;
+		var north = IslandPotLayout.North(territory);
+		var south = IslandPotLayout.South(territory);
+		return north != null && FateReader.IsActive(north.FateID)
+		       || south != null && FateReader.IsActive(south.FateID);
 	}
 
 	internal bool TryGetTarget(ushort territory, out PotKind kind, out string reason)
@@ -482,7 +578,9 @@ internal sealed class KeitaPotTracker
 		long num = potState.SpawnTime + 1800;
 		long num2 = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 		kind = potState2.Kind;
-		reason = ((num <= num2) ? (potState2.KindLabel + "即将刷新") : $"下个{potState2.KindLabel} {TimeSpan.FromSeconds(num - num2):mm\\:ss}");
+		reason = num <= num2
+			? potState2.KindLabel + "数据过期"
+			: $"下个{potState2.KindLabel} {TimeSpan.FromSeconds(num - num2):mm\\:ss}";
 		return true;
 	}
 
@@ -567,6 +665,7 @@ internal sealed class KeitaPotTracker
 		{
 			Fingerprint = ComputeHash(currentDataCenter, num, (int)num2),
 			Datacenter = (ushort)currentDataCenter,
+			Server = GameState.CurrentWorld,
 			Territory = territoryType,
 			FateID = num,
 			FateTimestamp = (int)num2,
@@ -740,6 +839,8 @@ internal sealed class KeitaPotTracker
 		{
 			["last_fate"] = context.Fingerprint,
 			["territory"] = context.Territory,
+			["datacenter"] = context.Datacenter,
+			["server"] = context.Server,
 			["fate"] = context.FateID,
 			["fate_timestamp"] = context.FateTimestamp,
 			["last_update"] = now
@@ -775,6 +876,7 @@ internal sealed class KeitaPotTracker
 			["last_fate"] = context.Fingerprint,
 			["tracker_type"] = 1,
 			["datacenter"] = context.Datacenter,
+			["server"] = context.Server,
 			["fate"] = context.FateID,
 			["fate_timestamp"] = context.FateTimestamp,
 			["encounter_history"] = "[]",
@@ -857,18 +959,23 @@ internal sealed class KeitaPotTracker
 		try
 		{
 			long minUpdate = now - 14400;
-			string requestURI = $"{"https://infi.ovh/api/"}{"OccultTrackerV3"}?tracker_type=eq.1&territory=in.({1252},{1346})&last_update=gte.{minUpdate}&select=id,territory,datacenter,server,last_update,pot_history" + "&order=last_update.desc&limit=120";
+			string requestURI = CatalogRequestURI(minUpdate, trackerType: true, cnOnly: true);
 			TrackerRow[] array = JsonSerializer.Deserialize<TrackerRow[]>(await Client.GetStringAsync(requestURI), JSONOptions);
 			if (array == null || array.Length == 0)
 			{
-				requestURI = $"{"https://infi.ovh/api/"}{"OccultTrackerV3"}?territory=in.({1252},{1346})&last_update=gte.{minUpdate}&select=id,territory,datacenter,server,last_update,pot_history" + "&order=last_update.desc&limit=120";
+				requestURI = CatalogRequestURI(minUpdate, trackerType: true, cnOnly: false);
+				array = JsonSerializer.Deserialize<TrackerRow[]>(await Client.GetStringAsync(requestURI), JSONOptions);
+			}
+			if (array == null || array.Length == 0)
+			{
+				requestURI = CatalogRequestURI(minUpdate, trackerType: false, cnOnly: true);
 				array = JsonSerializer.Deserialize<TrackerRow[]>(await Client.GetStringAsync(requestURI), JSONOptions);
 			}
 			if (array == null || array.Length == 0)
 			{
 				return;
 			}
-			Dictionary<(CnDataCenterKind, ushort), RemoteIslandSnapshot> dictionary = new Dictionary<(CnDataCenterKind, ushort), RemoteIslandSnapshot>();
+			Dictionary<(CnDataCenterKind, ushort, uint), RemoteIslandSnapshot> dictionary = new();
 			TrackerRow[] array2 = array;
 			foreach (TrackerRow trackerRow in array2)
 			{
@@ -876,15 +983,14 @@ internal sealed class KeitaPotTracker
 				if (!ZoneIds.IsSupportedIsland((ushort)territory))
 					continue;
 				CnDataCenterKind? cnDataCenterKind = ResolveRowDC(trackerRow);
-				if (cnDataCenterKind.HasValue)
-				{
-					(CnDataCenterKind, ushort) key = (cnDataCenterKind.Value, (ushort)trackerRow.Territory);
-					if (!dictionary.TryGetValue(key, out var value) || value.LastUpdate < trackerRow.LastUpdate)
-					{
-						ParseHistory(trackerRow, (ushort)trackerRow.Territory, out var northSpawn, out var southSpawn, out var northDeath, out var southDeath);
-						dictionary[key] = new RemoteIslandSnapshot(cnDataCenterKind.Value, (ushort)trackerRow.Territory, trackerRow.LastUpdate, northSpawn, southSpawn, northDeath, southDeath);
-					}
-				}
+				if (!cnDataCenterKind.HasValue || !IsUsableCatalogRow(trackerRow, cnDataCenterKind.Value))
+					continue;
+				if (trackerRow.Server == 0)
+					continue;
+				ParseHistory(trackerRow, (ushort)trackerRow.Territory, out var northSpawn, out var southSpawn, out var northDeath, out var southDeath);
+				(CnDataCenterKind, ushort, uint) key = (cnDataCenterKind.Value, (ushort)trackerRow.Territory, trackerRow.Server);
+				if (!dictionary.TryGetValue(key, out var value) || IsBetterCatalogRow(trackerRow, northSpawn, southSpawn, value))
+					dictionary[key] = new RemoteIslandSnapshot(cnDataCenterKind.Value, (ushort)trackerRow.Territory, trackerRow.LastUpdate, northSpawn, southSpawn, northDeath, southDeath, trackerRow.Server);
 			}
 			if (dictionary.Count != 0)
 			{
@@ -907,17 +1013,32 @@ internal sealed class KeitaPotTracker
 		}
 	}
 
-	private static CnDataCenterKind? ResolveRowDC(TrackerRow row)
+	private static CnDataCenterKind? ResolveRowDC(TrackerRow row) =>
+		CnWorldCatalog.KindForTrackerRow(row.Datacenter, row.Server);
+
+	private static bool IsUsableCatalogRow(TrackerRow row, CnDataCenterKind dc)
 	{
-		if (row.Datacenter != 0)
-		{
-			return CnWorldCatalog.KindForDataCenterID(row.Datacenter);
-		}
-		if (row.Server != 0)
-		{
-			return CnWorldCatalog.KindForWorldID(row.Server);
-		}
-		return null;
+		// 只校验 server 属于该大区；具体世界由路线勾选过滤，不按当前所在服丢弃。
+		return CnWorldCatalog.KindForWorldID(row.Server) is { } worldDC && worldDC == dc;
+	}
+
+	private static bool IsBetterCatalogRow(TrackerRow row, long northSpawn, long southSpawn, RemoteIslandSnapshot existing)
+	{
+		bool hasTimes = northSpawn > 0 || southSpawn > 0;
+		bool existingHas = existing.NorthSpawn > 0 || existing.SouthSpawn > 0;
+		if (hasTimes != existingHas)
+			return hasTimes;
+		return row.LastUpdate > existing.LastUpdate;
+	}
+
+	private static string CatalogRequestURI(long minUpdate, bool trackerType, bool cnOnly)
+	{
+		string text = $"{TrackerBaseURL}{TrackerTable}?territory=in.({ZoneIds.SouthHorn},{ZoneIds.NorthHorn})&last_update=gte.{minUpdate}";
+		if (trackerType)
+			text += "&tracker_type=eq.1";
+		if (cnOnly)
+			text += "&or=(datacenter.in.(101,102,103,104),and(server.gte.1000,server.lt.2000))";
+		return text + "&select=id,territory,datacenter,server,last_update,pot_history&order=last_update.desc&limit=120";
 	}
 
 	private static void ParseHistory(TrackerRow row, ushort territory, out long northSpawn, out long southSpawn, out long northDeath, out long southDeath)
@@ -965,7 +1086,10 @@ internal sealed class KeitaPotTracker
 		{
 			foreach (RemoteIslandSnapshot item in list)
 			{
-				remote[(item.DC, item.Territory)] = item;
+				var worldID = item.WorldID;
+				if (worldID == 0)
+					continue;
+				remote[(item.DC, item.Territory, worldID)] = item;
 			}
 		}
 		hasCatalog = true;
@@ -974,28 +1098,82 @@ internal sealed class KeitaPotTracker
 
 	private void MergeLocalIntoCatalog(long now)
 	{
-		ushort num = (ushort)GameState.TerritoryType;
-		if (!ZoneIds.IsSupportedIsland(num) || !TryGetCurrentPots(num, out PotState north, out PotState south))
-		{
+		var territory = (ushort)GameState.TerritoryType;
+		if (!ZoneIds.IsSupportedIsland(territory) || !TryGetCurrentPots(territory, out PotState north, out PotState south))
 			return;
-		}
-		CnDataCenterKind? cnDataCenterKind = CnWorldCatalog.KindForWorldID(CnWorldCatalog.CurrentWorldID) ?? CnWorldCatalog.KindForDataCenterID(GameState.CurrentDataCenter);
-		if (!cnDataCenterKind.HasValue)
-		{
+
+		var worldID = CnWorldCatalog.CurrentWorldID;
+		var dc = CnWorldCatalog.KindForWorldID(worldID) ?? CnWorldCatalog.KindForDataCenterID(GameState.CurrentDataCenter);
+		if (!dc.HasValue || worldID == 0)
 			return;
-		}
+
 		lock (syncLock)
 		{
-			remote.TryGetValue((cnDataCenterKind.Value, num), out var value);
-			long num2 = MergeSpawn(north, value.NorthSpawn);
-			long num3 = MergeSpawn(south, value.SouthSpawn);
-			if (num2 <= 0 && num3 <= 0)
-			{
+			remote.TryGetValue((dc.Value, territory, worldID), out var existing);
+			var northSpawn = MergeSpawn(north, existing.NorthSpawn);
+			var southSpawn = MergeSpawn(south, existing.SouthSpawn);
+			if (northSpawn <= 0 && southSpawn <= 0)
 				return;
-			}
-			remote[(cnDataCenterKind.Value, num)] = new RemoteIslandSnapshot(cnDataCenterKind.Value, num, now, num2, num3, MergeDeath(north, value.NorthDeath), MergeDeath(south, value.SouthDeath));
+
+			remote[(dc.Value, territory, worldID)] = new RemoteIslandSnapshot(
+				dc.Value,
+				territory,
+				now,
+				northSpawn,
+				southSpawn,
+				MergeDeath(north, existing.NorthDeath),
+				MergeDeath(south, existing.SouthDeath),
+				worldID);
 		}
 		hasCatalog = true;
+	}
+
+	private void TryLocalSpawns(ushort territory, out long northSpawn, out long southSpawn)
+	{
+		northSpawn = 0;
+		southSpawn = 0;
+		if (!ZoneIds.IsSupportedIsland(territory) || !TryGetCurrentPots(territory, out var north, out var south))
+			return;
+		if (north.SpawnTime > 0)
+			northSpawn = north.SpawnTime;
+		if (south.SpawnTime > 0)
+			southSpawn = south.SpawnTime;
+	}
+
+	private bool TryGetMergedDCIsland(CnDataCenterKind dc, ushort territory, long now, out RemoteIslandSnapshot island)
+	{
+		island = default;
+		List<RemoteIslandSnapshot> rows;
+		lock (syncLock)
+			rows = remote.Values.Where(r => r.DC == dc && r.Territory == territory).ToList();
+
+		long preferNorth = 0;
+		long preferSouth = 0;
+		if ((ushort)GameState.TerritoryType == territory)
+		{
+			var hereDC = CnWorldCatalog.KindForWorldID(CnWorldCatalog.CurrentWorldID)
+			             ?? CnWorldCatalog.KindForDataCenterID(GameState.CurrentDataCenter);
+			if (hereDC == dc)
+				TryLocalSpawns(territory, out preferNorth, out preferSouth);
+		}
+
+		if (!OccultTrackerPlanner.TryMergeDCIsland(rows, dc, territory, now, out island, preferNorth, preferSouth)
+		    && !ZoneIds.IsSupportedIsland(territory))
+			return false;
+
+		if ((ushort)GameState.TerritoryType != territory
+		    || !TryGetCurrentPots(territory, out var north, out var south))
+			return island.LastUpdate != 0 || island.NorthSpawn > 0 || island.SouthSpawn > 0;
+
+		var northSpawn = MergeSpawn(north, island.NorthSpawn);
+		var southSpawn = MergeSpawn(south, island.SouthSpawn);
+		if (northSpawn <= 0 && southSpawn <= 0)
+			return island.LastUpdate != 0 || island.NorthSpawn > 0 || island.SouthSpawn > 0;
+
+		island = new RemoteIslandSnapshot(
+			dc, territory, now, northSpawn, southSpawn,
+			MergeDeath(north, island.NorthDeath), MergeDeath(south, island.SouthDeath));
+		return true;
 	}
 
 	private static long MergeSpawn(PotState local, long catalog)
@@ -1026,19 +1204,9 @@ internal sealed class KeitaPotTracker
 		wait = int.MaxValue;
 		untilGone = 0;
 		alive = false;
-		CnDataCenterKind? cnDataCenterKind = CnWorldCatalog.KindForWorldID(CnWorldCatalog.CurrentWorldID) ?? CnWorldCatalog.KindForDataCenterID(GameState.CurrentDataCenter);
-		if (!cnDataCenterKind.HasValue)
-		{
+		var dc = CnWorldCatalog.KindForWorldID(CnWorldCatalog.CurrentWorldID) ?? CnWorldCatalog.KindForDataCenterID(GameState.CurrentDataCenter);
+		if (!dc.HasValue || !TryGetMergedDCIsland(dc.Value, territory, now, out var value))
 			return false;
-		}
-		RemoteIslandSnapshot value;
-		lock (syncLock)
-		{
-			if (!remote.TryGetValue((cnDataCenterKind.Value, territory), out value))
-			{
-				return false;
-			}
-		}
 		return OccultTrackerPlanner.TryComputeNext(value, now, out kind, out wait, out untilGone, out alive);
 	}
 
@@ -1104,12 +1272,24 @@ internal sealed class KeitaPotTracker
 			for (int i = 0; i < all.Length; i++)
 			{
 				CnDataCenterKind item = all[i].Item1;
-				remote.TryGetValue((item, 1252), out var value);
-				remote.TryGetValue((item, 1346), out var value2);
-				list.Add($"{CnWorldCatalog.DCDisplayName(item)} 南征 {OccultTrackerPlanner.FormatIsland((value.LastUpdate == 0L) ? ((RemoteIslandSnapshot?)null) : new RemoteIslandSnapshot?(value), now)} 北征 {OccultTrackerPlanner.FormatIsland((value2.LastUpdate == 0L) ? ((RemoteIslandSnapshot?)null) : new RemoteIslandSnapshot?(value2), now)}");
+				var south = PickBestIsland(remote.Values, item, ZoneIds.SouthHorn, now);
+				var north = PickBestIsland(remote.Values, item, ZoneIds.NorthHorn, now);
+				list.Add($"{CnWorldCatalog.DCDisplayName(item)} 南征 {OccultTrackerPlanner.FormatIsland(south, now)} 北征 {OccultTrackerPlanner.FormatIsland(north, now)}");
 			}
 		}
 		CatalogStatus = RuntimeStatus.Literal(string.Join(" | ", list));
+	}
+
+	private static RemoteIslandSnapshot? PickBestIsland(
+		IEnumerable<RemoteIslandSnapshot> islands,
+		CnDataCenterKind dc,
+		ushort territory,
+		long now)
+	{
+		var rows = islands.Where(i => i.DC == dc && i.Territory == territory).ToList();
+		if (!OccultTrackerPlanner.TryMergeDCIsland(rows, dc, territory, now, out var merged))
+			return null;
+		return merged;
 	}
 
 	private static void MergeSynced(PotState pot, long spawn, long lastSeen)

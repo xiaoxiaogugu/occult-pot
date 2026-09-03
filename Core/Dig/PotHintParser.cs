@@ -36,34 +36,40 @@ internal static class PotHintParser
 			evt = new PotChatEvent(PotChatEventType.MoreMedicine, text2);
 			return true;
 		}
-		if (text2.Contains("圣灵药", StringComparison.Ordinal) && (text2.Contains("需要", StringComparison.Ordinal) || text2.Contains("使用", StringComparison.Ordinal) || text2.Contains("没有", StringComparison.Ordinal)))
+		if (text2.Contains("第二处", StringComparison.Ordinal) && text2.Contains("财宝", StringComparison.Ordinal))
+		{
+			evt = new PotChatEvent(PotChatEventType.ContinuationReady, text2);
+			return true;
+		}
+		if (text2.Contains("打开第一个财宝", StringComparison.Ordinal) && text2.Contains("圣灵药", StringComparison.Ordinal))
+		{
+			evt = new PotChatEvent(PotChatEventType.ElixirRejected, text2);
+			return true;
+		}
+		if (text2.Contains("圣灵药", StringComparison.Ordinal) && (text2.Contains("给我", StringComparison.Ordinal) || text2.Contains("想要", StringComparison.Ordinal) || text2.Contains("需要", StringComparison.Ordinal) || text2.Contains("没有", StringComparison.Ordinal)))
 		{
 			evt = new PotChatEvent(PotChatEventType.NeedsMedicine, text2);
 			return true;
 		}
 		if (!text2.Contains("财宝", StringComparison.Ordinal) || !text2.Contains("方向", StringComparison.Ordinal))
-		{
 			return false;
-		}
-		string text3 = null;
-		string[] digDirections = DigDirections;
-		foreach (string text4 in digDirections)
+
+		string? matched = null;
+		foreach (var label in DigDirections)
 		{
-			if (text2.Contains(text4, StringComparison.Ordinal))
-			{
-				text3 = text4;
-				break;
-			}
+			if (!text2.Contains(label, StringComparison.Ordinal))
+				continue;
+			matched = label;
+			break;
 		}
-		if (text3 == null || !TryParseDirection(text3, out var direction))
-		{
+
+		if (matched == null || !TryParseDirection(matched, out var direction))
 			return false;
-		}
+
 		HintDistance? distance = null;
-		if (TryParseDistanceFromLine(text2, out var distance2))
-		{
-			distance = distance2;
-		}
+		if (TryParseDistanceFromLine(text2, out var parsedDistance))
+			distance = parsedDistance;
+
 		evt = new PotChatEvent(PotChatEventType.DirectionHint, text2, direction, distance);
 		return true;
 	}
@@ -72,46 +78,37 @@ internal static class PotHintParser
 	{
 		float min = 0f;
 		float max = float.PositiveInfinity;
-		if (distance.HasValue)
+		if (distance is { } hintDistance)
 		{
-			HintDistance valueOrDefault = distance.GetValueOrDefault();
-			GetDistanceRange(valueOrDefault, out min, out max);
+			GetDistanceRange(hintDistance, out min, out max);
 			min = Math.Max(0f, min - 3f);
 			if (!float.IsPositiveInfinity(max))
-			{
 				max += 3f;
-			}
 		}
-		List<Vector3> list = new List<Vector3>();
-		int num;
-		if (direction.HasValue)
+
+		var sector = direction is { } dir ? DirectionSector(dir) : -1;
+		var list = new List<Vector3>();
+		foreach (var item in pool)
 		{
-			CardinalDirection valueOrDefault2 = direction.GetValueOrDefault();
-			num = DirectionSector(valueOrDefault2);
+			var delta = new Vector2(item.X - origin.X, item.Z - origin.Z);
+			var distSq = delta.LengthSquared();
+			if (distSq < 1f)
+				continue;
+
+			var dist = MathF.Sqrt(distSq);
+			if (dist < min || dist > max)
+				continue;
+			if (sector >= 0 && DirectionSector(delta) != sector)
+				continue;
+
+			list.Add(item);
 		}
-		else
+
+		list.Sort((a, b) =>
 		{
-			num = -1;
-		}
-		int num2 = num;
-		foreach (Vector3 item in pool)
-		{
-			Vector2 delta = new Vector2(item.X - origin.X, item.Z - origin.Z);
-			float num3 = delta.LengthSquared();
-			if (!(num3 < 1f))
-			{
-				float num4 = MathF.Sqrt(num3);
-				if (!(num4 < min) && !(num4 > max) && (num2 < 0 || DirectionSector(delta) == num2))
-				{
-					list.Add(item);
-				}
-			}
-		}
-		list.Sort(delegate(Vector3 a, Vector3 b)
-		{
-			float num5 = new Vector2(a.X - origin.X, a.Z - origin.Z).LengthSquared();
-			float value = new Vector2(b.X - origin.X, b.Z - origin.Z).LengthSquared();
-			return num5.CompareTo(value);
+			var da = new Vector2(a.X - origin.X, a.Z - origin.Z).LengthSquared();
+			var db = new Vector2(b.X - origin.X, b.Z - origin.Z).LengthSquared();
+			return da.CompareTo(db);
 		});
 		return list;
 	}

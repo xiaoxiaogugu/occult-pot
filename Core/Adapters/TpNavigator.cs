@@ -42,16 +42,11 @@ internal sealed class TpNavigator
 
 	internal bool IsTeleporting(Vector3 target, float radius)
 	{
-		Vector3? vector = pendingTarget;
-		if (vector.HasValue)
-		{
-			Vector3 valueOrDefault = vector.GetValueOrDefault();
-			if (Vector3.Distance(valueOrDefault, target) <= 1.5f)
-			{
-				return !HasArrived(target, radius);
-			}
-		}
-		return false;
+		if (pendingTarget is not { } pending)
+			return false;
+		if (Vector3.Distance(pending, target) > 1.5f)
+			return false;
+		return !HasArrived(target, radius);
 	}
 
 	internal bool MoveTo(Vector3 destination, double nowSeconds, float intervalSeconds = 5f, bool useDiveTp = true)
@@ -67,18 +62,18 @@ internal sealed class TpNavigator
 			LastDetail = "已在目标点";
 			return true;
 		}
-		float num = Math.Clamp(intervalSeconds, 0.5f, 60f);
-		if (nowSeconds - lastTpSeconds < (double)num)
+		var interval = Math.Clamp(intervalSeconds, 0.5f, 60f);
+		if (nowSeconds - lastTpSeconds < interval)
 		{
-			LastDetail = $"TP 冷却中（{num:0.#}s）";
+			LastDetail = $"TP 冷却中（{interval:0.#}s）";
 			pendingTarget = destination;
 			return false;
 		}
-		string text = FormatTpCommand(destination, useDiveTp);
-		ExternalCommands.Run(text);
+		var command = FormatTpCommand(destination, useDiveTp);
+		ExternalCommands.Run(command);
 		lastTpSeconds = nowSeconds;
 		pendingTarget = destination;
-		LastDetail = text;
+		LastDetail = command;
 		return true;
 	}
 

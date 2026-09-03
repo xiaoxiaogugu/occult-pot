@@ -26,6 +26,7 @@ internal static class StatusSummary
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(spacing.X, ScaledVector2(2f).Y));
         DrawHeaderLine(service);
         DrawInfoLine(OccultPotLoc.Get("StatusActivity"), service.ActivityLabel);
+        DrawInfoLine(OccultPotLoc.Get("StatusCurrentTarget"), service.CurrentTargetLabel);
         DrawInfoLine(OccultPotLoc.Get("StatusNextTarget"), service.NextTargetLabel);
         ImGui.PopStyleVar();
     }
@@ -75,9 +76,8 @@ internal static class StatusSummary
 
         ImGui.EndTable();
 
-        ImGui.TextDisabled(OccultPotLoc.Get("StatusNextTarget"));
-        ImGui.SameLine();
-        ImGui.Text(service.NextTargetLabel);
+        DrawInfoLine(OccultPotLoc.Get("StatusCurrentTarget"), service.CurrentTargetLabel);
+        DrawInfoLine(OccultPotLoc.Get("StatusNextTarget"), service.NextTargetLabel);
     }
 
     private static string TerritoryLabel(ushort territory) =>

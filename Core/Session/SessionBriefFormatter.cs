@@ -21,6 +21,11 @@ internal static class SessionBriefFormatter
         return Activity(service.Phase, service.Status);
     }
 
+    internal static string CurrentTarget(OccultPotService service) =>
+        service.TryGetCurrentTargetLabel(out var label)
+            ? label
+            : OccultPotLoc.Get("StatusCurrentPending");
+
     internal static string NextTarget(OccultPotService service) =>
         service.TryGetNextTargetLabel(out var label)
             ? label
@@ -29,7 +34,7 @@ internal static class SessionBriefFormatter
     private static string Activity(SessionPhase phase, RuntimeStatus status) =>
         phase switch
         {
-            SessionPhase.Digging or SessionPhase.ElixirUse => OccultPotLoc.Get("ActivityDigging"),
+            SessionPhase.Digging or SessionPhase.ElixirUse or SessionPhase.WaitCampReturn => OccultPotLoc.Get("ActivityDigging"),
             SessionPhase.PrepareEntry
                 or SessionPhase.PlanRoute
                 or SessionPhase.EnsureWorld
@@ -38,8 +43,7 @@ internal static class SessionBriefFormatter
                 or SessionPhase.WaitLeave
                 or SessionPhase.WorldTravel => OccultPotLoc.Get("ActivityTraveling"),
             SessionPhase.ReadyIsland
-                or SessionPhase.FindPot
-                or SessionPhase.WaitCampReturn => OccultPotLoc.Get("ActivityFinding"),
+                or SessionPhase.FindPot => OccultPotLoc.Get("ActivityFinding"),
             SessionPhase.WaitFight => IsFighting(status)
                 ? OccultPotLoc.Get("ActivityFighting")
                 : OccultPotLoc.Get("ActivityWaiting"),
@@ -50,17 +54,48 @@ internal static class SessionBriefFormatter
     private static bool IsFighting(RuntimeStatus status) =>
         status.Code is RuntimeStatusCode.Fight_InProgress;
 
-    internal static string FormatVisitShort(PlannedPotVisit visit)
+    internal static string FormatVisitShort(PlannedPotVisit visit) =>
+        FormatVisitShort(visit.DC, visit.WorldID, visit.Territory, visit.Kind, visit.Alive, visit.WaitSeconds, visit.UntilGoneSeconds, forNext: true);
+
+    internal static string FormatVisitShort(CnDataCenterKind dc, uint worldID, ushort territory, PotKind kind) =>
+        FormatVisitPlace(dc, worldID, territory, kind);
+
+    internal static string FormatVisitShort(
+        CnDataCenterKind dc,
+        uint worldID,
+        ushort territory,
+        PotKind kind,
+        bool alive,
+        int wait,
+        int untilGone,
+        bool forNext = false) =>
+        $"{FormatVisitPlace(dc, worldID, territory, kind)} {FormatVisitWhen(alive, wait, untilGone, forNext)}";
+
+    private static string FormatVisitPlace(CnDataCenterKind dc, uint worldID, ushort territory, PotKind kind)
     {
-        var island = visit.Territory switch
+        var place = worldID != 0
+            ? CnWorldCatalog.WorldName(worldID)
+            : CnWorldCatalog.DCDisplayName(dc);
+        var island = territory switch
         {
             ZoneIds.SouthHorn => OccultPotLoc.Get("SummaryIslandSouth"),
             ZoneIds.NorthHorn => OccultPotLoc.Get("SummaryIslandNorth"),
-            _ => IslandPotLayout.IslandLabel(visit.Territory),
+            _ => IslandPotLayout.IslandLabel(territory),
         };
-        var pot = visit.Kind == PotKind.North
+        var pot = kind == PotKind.North
             ? OccultPotLoc.Get("SummaryPotNorth")
             : OccultPotLoc.Get("SummaryPotSouth");
-        return $"{CnWorldCatalog.DCDisplayName(visit.DC)} {island} {pot}";
+        return $"{place} {island} {pot}";
+    }
+
+    private static string FormatVisitWhen(bool alive, int wait, int untilGone, bool forNext)
+    {
+        if (alive)
+            return OccultPotLoc.Format(
+                forNext ? "SummaryPotAvailable" : "SummaryPotAlive",
+                OccultTrackerPlanner.FormatMmSs(untilGone));
+        if (wait <= 0)
+            return OccultPotLoc.Get("SummaryPotStale");
+        return OccultPotLoc.Format("SummaryPotWait", OccultTrackerPlanner.FormatMmSs(wait));
     }
 }

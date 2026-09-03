@@ -24,7 +24,11 @@ internal sealed class OccultPotService
 
     internal string ActivityLabel => SessionBriefFormatter.Activity(this);
 
+    internal string CurrentTargetLabel => SessionBriefFormatter.CurrentTarget(this);
+
     internal string NextTargetLabel => SessionBriefFormatter.NextTarget(this);
+
+    internal bool TryGetCurrentTargetLabel(out string label) => session.TryGetCurrentTargetLabel(out label);
 
     internal bool TryGetNextTargetLabel(out string label) => session.TryGetNextTargetLabel(out label);
 

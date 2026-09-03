@@ -376,6 +376,9 @@ internal sealed class FindPotController
 
     private void BeginTravelPot(PotSideLayout layout)
     {
+        if (chosen == layout && afterTravel == AfterTravel.AtPot && travel.IsRunning)
+            return;
+
         observeFallback = false;
         chosen          = layout;
         afterTravel     = AfterTravel.AtPot;

@@ -194,16 +194,18 @@ internal static class OccultPotChestTables
 	internal static IReadOnlyList<Vector3> GetPositions(uint territoryID, PotKind? kind = null, bool rerollOnly = false)
 	{
 		IReadOnlyList<Vector3> all = GetAll(territoryID);
-		if (all.Count < 80 || !kind.HasValue)
-		{
+		if (all.Count < FullCount)
 			return all;
-		}
+
+		// 续罐只扫后 20 点；不要等 digKind，否则会退回全表、把「很远」当成 ≥200 的最近候选。
 		if (rerollOnly)
-		{
-			return Slice(all, 60, 20);
-		}
-		int start = ((kind != PotKind.North) ? 30 : 0);
-		return Slice(all, start, 30);
+			return Slice(all, KindCount * 2, RerollCount);
+
+		if (!kind.HasValue)
+			return all;
+
+		var start = kind == PotKind.North ? 0 : KindCount;
+		return Slice(all, start, KindCount);
 	}
 
 	private static Vector3[] Slice(IReadOnlyList<Vector3> all, int start, int count)

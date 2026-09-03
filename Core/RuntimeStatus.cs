@@ -52,6 +52,7 @@ internal enum RuntimeStatusCode
     Job_Ready,
     Job_Switching,
 
+    Find_WaitLocal,
     Find_StartOnline,
     Find_StartFailed,
     Find_NoTerritoryConfig,

@@ -12,7 +12,8 @@ internal static unsafe class PartyInviteActions
     private static string inviterName = string.Empty;
     private static bool acceptSent;
     private static long acceptAt;
-    private static bool leaveSent;
+    private static bool leaveRequested;
+    private static long leaveAt;
 
     internal static void Reset()
     {
@@ -20,7 +21,8 @@ internal static unsafe class PartyInviteActions
         inviterName = string.Empty;
         acceptSent = false;
         acceptAt = 0;
-        leaveSent = false;
+        leaveRequested = false;
+        leaveAt = 0;
     }
 
     internal static void TickAccept()
@@ -73,22 +75,29 @@ internal static unsafe class PartyInviteActions
         acceptAt = Environment.TickCount64 + 400;
     }
 
-    internal static void LeaveOnce()
+    internal static void LeaveOnce() =>
+        leaveRequested = true;
+
+    internal static void TickLeave()
     {
-        if (leaveSent)
+        if (!leaveRequested)
             return;
 
         if (!LocalPlayerState.IsInAnyParty)
         {
-            leaveSent = true;
+            leaveRequested = false;
+            leaveAt = 0;
             return;
         }
 
+        TryClickLeaveYesno();
         if (PlayerReader.IsBusy() || PlayerReader.IsBetweenAreas())
             return;
+        if (leaveAt != 0 && Environment.TickCount64 < leaveAt)
+            return;
 
-        ExternalCommands.Run("/partyleave");
-        leaveSent = true;
+        ExternalCommands.Run("/退队");
+        leaveAt = Environment.TickCount64 + 1500;
     }
 
     private static void ClearPendingAccept()
@@ -102,4 +111,9 @@ internal static unsafe class PartyInviteActions
     private static bool TryClickInviteYesno() =>
         AddonSelectYesnoEvent.ClickYes("加入队伍") ||
         AddonSelectYesnoEvent.ClickYes("加入小队");
+
+    private static bool TryClickLeaveYesno() =>
+        AddonSelectYesnoEvent.ClickYes("离开小队") ||
+        AddonSelectYesnoEvent.ClickYes("退出小队") ||
+        AddonSelectYesnoEvent.ClickYes("离开队伍");
 }

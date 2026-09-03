@@ -1,5 +1,5 @@
-using System.Globalization;
 using System.Numerics;
+using OccultPot.Core.Game;
 using OmenTools;
 using OmenTools.Dalamud;
 using OmenTools.Extensions;
@@ -30,9 +30,16 @@ internal sealed class VNavController
 	{
 		try
 		{
-			if (IsRunning())
-				vnavmeshIPC.StopPathfind();
-			vnavmeshIPC.CancelAllQueries();
+			if (PlayerReader.IsTransitionLocked())
+			{
+				LastDetail = "过图中，跳过停路";
+				return;
+			}
+
+			if (!IsFollowing())
+				return;
+
+			vnavmeshIPC.StopPathfind();
 		}
 		catch
 		{
@@ -40,14 +47,9 @@ internal sealed class VNavController
 		LastDetail = "已停止寻路";
 	}
 
-	internal static string MoveToCommand(Vector3 destination)
-	{
-		return $"/vnav moveto {destination.X.ToString(CultureInfo.InvariantCulture)} {destination.Y.ToString(CultureInfo.InvariantCulture)} {destination.Z.ToString(CultureInfo.InvariantCulture)}";
-	}
-
 	internal bool MoveTo(Vector3 destination)
 	{
-		if (!IsReady())
+		if (!IsReady() || PlayerReader.IsTransitionLocked())
 		{
 			return false;
 		}
@@ -56,14 +58,13 @@ internal sealed class VNavController
 			LastDetail = "vnav 寻路中";
 			return true;
 		}
-		ExternalCommands.Run(MoveToCommand(destination));
-		LastDetail = "vnav 寻路中";
-		return true;
+		LastDetail = "vnav 寻路失败";
+		return false;
 	}
 
 	internal bool PathfindTo(Vector3 destination)
 	{
-		if (!IsReady())
+		if (!IsReady() || PlayerReader.IsTransitionLocked())
 		{
 			return false;
 		}
@@ -80,7 +81,21 @@ internal sealed class VNavController
 	{
 		try
 		{
-			return vnavmeshIPC.GetIsPathfindRunning() || vnavmeshIPC.GetIsPathfindInProgress() || vnavmeshIPC.GetIsNavPathfindInProgress();
+			return IsFollowing()
+				|| vnavmeshIPC.GetIsPathfindInProgress()
+				|| vnavmeshIPC.GetIsNavPathfindInProgress();
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private static bool IsFollowing()
+	{
+		try
+		{
+			return vnavmeshIPC.GetIsPathfindRunning();
 		}
 		catch
 		{

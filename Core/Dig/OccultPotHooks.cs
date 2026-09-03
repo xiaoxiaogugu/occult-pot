@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
-using Dalamud.Game.ClientState.Conditions;
 using OccultPot.Core.Adapters;
 using OccultPot.Core.Game;
+using OccultPot.Core.Nav;
 using OccultPot.Models;
 using OmenTools;
 using OmenTools.OmenService;
@@ -15,6 +15,8 @@ internal sealed class OccultPotHooks
 	private readonly TpNavigator tp = new TpNavigator();
 
 	private readonly VNavController vnav = new VNavController();
+
+	private readonly IslandTravel travel;
 
 	private readonly Action<StopReason>? onStopped;
 
@@ -56,6 +58,13 @@ internal sealed class OccultPotHooks
 		this.preferTp = preferTp ?? ((Func<bool>)(() => true));
 		this.useDiveTp = useDiveTp ?? ((Func<bool>)(() => true));
 		this.tpIntervalSeconds = tpIntervalSeconds ?? ((Func<float>)(() => 5f));
+		travel = new IslandTravel(vnav);
+	}
+
+	internal void Tick()
+	{
+		if (!preferTp())
+			travel.Tick();
 	}
 
 	public IReadOnlyList<Vector3> GetChestTable(uint territoryID)
@@ -102,6 +111,7 @@ internal sealed class OccultPotHooks
 		tp.Stop();
 		if (LocalPlayerState.DistanceTo3D(position) <= arriveRadius)
 		{
+			travel.Stop();
 			if (!allowMount && PlayerReader.IsOnMount())
 			{
 				MountActions.TryDismount();
@@ -111,6 +121,7 @@ internal sealed class OccultPotHooks
 		}
 		if (!allowMount)
 		{
+			travel.Stop();
 			if (PlayerReader.IsOnMount())
 			{
 				MountActions.TryDismount();
@@ -118,18 +129,16 @@ internal sealed class OccultPotHooks
 			}
 			return vnav.MoveTo(position);
 		}
-		bool flag = DService.Instance().Condition[(ConditionFlag)26];
-		if (!PlayerReader.IsOnMount() && !flag && MountActions.CanMount())
-		{
-			MountActions.TryMount();
-			return false;
-		}
-		return vnav.MoveTo(position);
+
+		// 挖箱绿玩：远点走水晶 hop，禁止返回营地。
+		travel.Begin((ushort)TerritoryID, position, "箱点", allowReturn: false, destArrive: arriveRadius);
+		return travel.IsDone || LocalPlayerState.DistanceTo3D(position) <= arriveRadius;
 	}
 
 	public bool StopMove()
 	{
 		tp.Stop();
+		travel.Stop();
 		vnav.Stop();
 		activeTarget = null;
 		return true;
@@ -174,7 +183,7 @@ internal sealed class OccultPotHooks
 	{
 		if (!PreferTp)
 		{
-			return vnav.HasArrived(target, radius);
+			return LocalPlayerState.DistanceTo3D(target) <= radius || vnav.HasArrived(target, radius);
 		}
 		return tp.HasArrived(target, radius);
 	}
@@ -182,15 +191,9 @@ internal sealed class OccultPotHooks
 	internal bool IsNavigating()
 	{
 		if (!PreferTp)
-		{
-			return vnav.IsRunning();
-		}
-		Vector3? vector = activeTarget;
-		if (vector.HasValue)
-		{
-			Vector3 valueOrDefault = vector.GetValueOrDefault();
-			return tp.IsTeleporting(valueOrDefault, 6f);
-		}
+			return travel.IsRunning || vnav.IsRunning();
+		if (activeTarget is { } target)
+			return tp.IsTeleporting(target, 6f);
 		return tp.IsPending;
 	}
 }

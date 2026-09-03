@@ -32,6 +32,15 @@ internal static class PlayerReader
     internal static bool IsBetweenAreas() =>
         DService.Instance().Condition.IsBetweenAreas;
 
+    internal static bool IsTransitionLocked()
+    {
+        var condition = DService.Instance().Condition;
+        return condition.IsBetweenAreas
+            || condition[ConditionFlag.OccupiedInCutSceneEvent]
+            || condition[ConditionFlag.WatchingCutscene]
+            || condition[ConditionFlag.WatchingCutscene78];
+    }
+
     internal static bool IsCasting()
     {
         var condition = DService.Instance().Condition;

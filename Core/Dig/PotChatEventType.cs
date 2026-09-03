@@ -6,6 +6,8 @@ internal enum PotChatEventType
 	NeedsMedicine,
 	TreasureFound,
 	MoreMedicine,
+	ContinuationReady,
+	ElixirRejected,
 	Farewell,
 	LureExhausted
 }

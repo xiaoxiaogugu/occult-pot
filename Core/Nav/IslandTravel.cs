@@ -2,6 +2,7 @@ using System.Numerics;
 using OccultPot.Core;
 using OccultPot.Core.Adapters;
 using OccultPot.Core.Game;
+using OmenTools.Interop.Game.AddonEvent;
 using OmenTools.Interop.Game.ExecuteCommand.Implementations;
 
 namespace OccultPot.Core.Nav;
@@ -78,6 +79,7 @@ internal sealed class IslandTravel
     private ushort territory;
     private AfterReturn afterReturn;
     private bool returnSent;
+    private float destArrive = DestArriveRadius;
 
     internal RuntimeStatus Status { get; private set; } = RuntimeStatus.Of(RuntimeStatusCode.SessionNotStarted);
 
@@ -108,11 +110,17 @@ internal sealed class IslandTravel
         Status       = RuntimeStatus.Of(RuntimeStatusCode.Travel_Stopped);
     }
 
-    internal void Begin(ushort territory, Vector3 dest, string label)
+    internal void Begin(ushort territory, Vector3 dest, string label, bool allowReturn = true, float destArrive = DestArriveRadius)
     {
+        if (IsRunning
+            && this.territory == territory
+            && Vector3.DistanceSquared(finalDest, dest) <= 1f)
+            return;
+
         Stop();
         this.label    = label;
         this.territory = territory;
+        this.destArrive  = destArrive > 0f ? destArrive : DestArriveRadius;
         finalDest     = dest;
         walkDest      = dest;
         var position = PlayerReader.Position;
@@ -123,13 +131,27 @@ internal sealed class IslandTravel
             return;
         }
 
-        if (PlayerReader.DistanceTo(finalDest) <= DestArriveRadius)
+        if (PlayerReader.DistanceTo(finalDest) <= this.destArrive)
         {
             Finish(RuntimeStatus.Of(RuntimeStatusCode.Travel_AlreadyAt, label));
             return;
         }
 
-        route = AethernetRouter.Decide(territory, position.Value, finalDest);
+        route = AethernetRouter.Decide(territory, position.Value, finalDest, allowReturn);
+        if (route.Kind == AethernetRouteKind.ReturnTeleportWalk && route.Source != null && route.Destination != null)
+        {
+            ExternalCommands.Echo($"[寻路] 返回 → {route.Destination.Name}，前往{label}");
+            StartReturn(AfterReturn.Ptp);
+            return;
+        }
+
+        if (route.Kind == AethernetRouteKind.ReturnWalk && route.Source != null)
+        {
+            ExternalCommands.Echo($"[寻路] 返回后前往{label}");
+            StartReturn(AfterReturn.WalkDest);
+            return;
+        }
+
         if (route.Kind == AethernetRouteKind.WalkTeleportWalk && route.Source != null && route.Destination != null)
         {
             ExternalCommands.Echo($"[寻路] {route.Source.Name} → {route.Destination.Name}，前往{label}");
@@ -227,6 +249,10 @@ internal sealed class IslandTravel
             return;
         }
 
+        // /ac 返回会弹确认；国服 /callback SelectYesno 不可用，走 Addon。
+        AddonSelectYesnoEvent.CheckConfirm("返回");
+        AddonSelectYesnoEvent.ClickYes("返回");
+
         if (Elapsed() >= ReturnWaitSeconds)
         {
             FallbackAfterFailedReturn();
@@ -274,7 +300,7 @@ internal sealed class IslandTravel
     }
 
     private void StartWalkDest() =>
-        StartWalk(finalDest, DestArriveRadius, DestWalkSeconds, Phase.WaitWalkDest, RuntimeStatus.Of(RuntimeStatusCode.Travel_ToDest, label));
+        StartWalk(finalDest, destArrive, DestWalkSeconds, Phase.WaitWalkDest, RuntimeStatus.Of(RuntimeStatusCode.Travel_ToDest, label));
 
     private void StartWalk(Vector3 dest, float arrive, double timeout, Phase waitPhase, RuntimeStatus status)
     {

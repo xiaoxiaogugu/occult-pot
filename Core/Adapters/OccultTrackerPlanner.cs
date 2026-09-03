@@ -10,7 +10,8 @@ internal readonly record struct RemoteIslandSnapshot(
     long NorthSpawn,
     long SouthSpawn,
     long NorthDeath,
-    long SouthDeath);
+    long SouthDeath,
+    uint WorldID = 0);
 
 internal readonly record struct PlannedPotVisit(
     CnDataCenterKind DC,
@@ -23,14 +24,40 @@ internal readonly record struct PlannedPotVisit(
     bool RequiresWorldTravel,
     string Reason);
 
+internal enum CrowdRebindAction
+{
+    Confirm,
+    Flip,
+    Abandon,
+}
+
+/// <summary>
+/// 众包路线：每大区只进一座南岛、一座北岛；同岛南北罐 30 分钟对侧轮换。
+/// </summary>
 internal static class OccultTrackerPlanner
 {
     internal const int SameDCBufferSeconds = 60;
+    internal const int SameDCHopSeconds = 60;
     internal const int CrossDCBufferSeconds = 300;
+    internal const int AbandonWaitSeconds = 300;
     internal const int FateAliveSeconds = 15 * 60;
     internal const long RespawnSeconds = 1800;
     internal const long CatalogStaleSeconds = 4 * 3600;
+    internal const int InstanceAlignSeconds = 240;
+    internal const int FreshUpdateSeconds = 20 * 60;
+    internal const int FreshSpawnSeconds = 50 * 60;
 
+    private const long CycleSeconds = RespawnSeconds * 2;
+
+    private sealed class IslandCluster
+    {
+        public long Epoch;
+        public readonly List<RemoteIslandSnapshot> Rows = [];
+    }
+
+    /// <param name="localFateAlive">
+    /// 当前所在岛现场是否有罐 Fate。为 false 时，本岛众包「存活」视为幻影，不当 0 等待。
+    /// </param>
     internal static bool TryPickVisit(
         IReadOnlyList<RemoteIslandSnapshot> islands,
         IReadOnlyList<(CnDataCenterKind Kind, uint WorldID)> worlds,
@@ -43,71 +70,88 @@ internal static class OccultTrackerPlanner
         CnDataCenterKind? excludeDC = null,
         ushort excludePotTerritory = 0,
         PotKind? excludePotKind = null,
-        CnDataCenterKind? excludePotDC = null)
+        CnDataCenterKind? excludePotDC = null,
+        bool localFateAlive = false,
+        long localNorthSpawn = 0,
+        long localSouthSpawn = 0)
     {
         visit = default;
         PlannedPotVisit? best = null;
-        var bestWait = int.MaxValue;
+        var bestEta = int.MaxValue;
         var bestTravel = 2;
-        var bestIsland = 2;
+        var bestGone = -1;
         currentDC ??= CnWorldCatalog.KindForWorldID(currentWorldID);
 
-        foreach (var (dc, worldID) in worlds)
+        foreach (var (dc, routeWorldID) in worlds)
         {
-            foreach (var island in islands)
+            foreach (var territory in new[] { ZoneIds.SouthHorn, ZoneIds.NorthHorn })
             {
-                if (island.DC != dc)
-                    continue;
-                if (excludeDC is { } skipDC && excludeTerritory != 0 && island.DC == skipDC && island.Territory == excludeTerritory)
-                    continue;
-                if (!TryComputeCandidate(island, now, excludePotTerritory, excludePotKind, excludePotDC, dc, out var kind, out var wait, out var untilGone, out var alive))
+                if (excludeDC is { } skipDC && excludeTerritory != 0 && dc == skipDC && territory == excludeTerritory)
                     continue;
 
-                var travel = worldID != 0 && currentWorldID != 0 && worldID != currentWorldID;
-                var sameDC = currentDC != null && currentDC.Value == dc;
-                if (!IsReachable(sameDC, travel, alive, wait, untilGone))
+                var preferNorth = currentDC == dc && territory == currentTerritory ? localNorthSpawn : 0;
+                var preferSouth = currentDC == dc && territory == currentTerritory ? localSouthSpawn : 0;
+                if (!TryMergeDCIsland(islands, dc, territory, now, out var merged, preferNorth, preferSouth))
+                    continue;
+                if (!TryComputeCandidate(merged, now, excludePotTerritory, excludePotKind, excludePotDC, dc, out var kind, out var wait, out var untilGone, out var alive))
+                    continue;
+                if (!alive && wait <= 0)
                     continue;
 
-                var travelRank = travel ? 1 : 0;
-                var islandRank = island.Territory == currentTerritory ? 0 : 1;
+                var travel = routeWorldID != 0 && currentWorldID != 0 && routeWorldID != currentWorldID;
+                var onThisIsland = currentDC == dc
+                    && territory == currentTerritory
+                    && ZoneIds.IsSupportedIsland(currentTerritory);
+                var sameDC = currentDC == dc;
+                var travelCost = onThisIsland ? 0 : sameDC ? SameDCHopSeconds : CrossDCBufferSeconds;
+
+                // 人在岛上但 Fate 没开：众包「进行中」不可打，改成等待成本。
+                if (alive && onThisIsland && !localFateAlive)
+                {
+                    alive = false;
+                    wait = Math.Max(untilGone, AbandonWaitSeconds);
+                    untilGone = wait + FateAliveSeconds;
+                }
+
+                if (alive && untilGone < (onThisIsland ? SameDCBufferSeconds : travelCost))
+                    continue;
+
+                // 赶到才能打：本岛 0，同区换岛 / 跨区分别加 hop。
+                var eta = alive ? travelCost : Math.Max(wait, travelCost);
+                var travelRank = onThisIsland ? 0 : sameDC ? 1 : 2;
+
                 if (best != null)
                 {
-                    if (wait > bestWait)
+                    if (eta > bestEta)
                         continue;
-                    if (wait == bestWait)
+                    if (eta == bestEta)
                     {
-                        if (travelRank > bestTravel)
+                        if (alive && untilGone < bestGone)
                             continue;
-                        if (travelRank == bestTravel && islandRank >= bestIsland)
+                        if ((!alive || untilGone == bestGone) && travelRank >= bestTravel)
                             continue;
                     }
                 }
 
-                var islandLabel = IslandPotLayout.IslandLabel(island.Territory);
+                var islandLabel = IslandPotLayout.IslandLabel(territory);
                 var kindLabel = kind == PotKind.North ? "北罐" : "南罐";
                 var when = alive
                     ? $"{kindLabel}进行中 剩{FormatMmSs(untilGone)}"
-                    : wait <= 0
-                        ? $"{kindLabel}即将刷新"
-                        : $"{kindLabel} {FormatMmSs(wait)}后";
-                var travelNote = travel
-                    ? sameDC
-                        ? $"，同区缓冲 {SameDCBufferSeconds / 60} 分钟"
-                        : $"，跨区需刷新 >{CrossDCBufferSeconds / 60} 分钟"
-                    : "";
+                    : $"{kindLabel} {FormatMmSs(wait)}后";
+                var worldName = CnWorldCatalog.WorldName(routeWorldID);
                 best = new PlannedPotVisit(
                     dc,
-                    worldID,
-                    island.Territory,
+                    routeWorldID,
+                    territory,
                     kind,
                     wait,
                     untilGone,
                     alive,
                     travel,
-                    $"{CnWorldCatalog.DCDisplayName(dc)} {islandLabel} {when}{travelNote}");
-                bestWait = wait;
+                    $"{CnWorldCatalog.DCDisplayName(dc)}/{worldName} {islandLabel} {when}");
+                bestEta = eta;
                 bestTravel = travelRank;
-                bestIsland = islandRank;
+                bestGone = alive ? untilGone : -1;
             }
         }
 
@@ -117,50 +161,130 @@ internal static class OccultTrackerPlanner
         return true;
     }
 
-    private static bool IsReachable(bool sameDC, bool travel, bool alive, int wait, int untilGone)
+    /// <summary>
+    /// 同大区同地图：按 30 分钟相位归成新旧岛，只取会进的那一座。
+    /// </summary>
+    internal static bool TryMergeDCIsland(
+        IReadOnlyList<RemoteIslandSnapshot> islands,
+        CnDataCenterKind dc,
+        ushort territory,
+        long now,
+        out RemoteIslandSnapshot merged,
+        long preferNorthSpawn = 0,
+        long preferSouthSpawn = 0)
     {
-        if (travel && !sameDC)
+        merged = default;
+        List<IslandCluster> clusters = [];
+
+        foreach (var island in islands)
         {
-            if (alive)
-                return false;
-            return wait >= CrossDCBufferSeconds;
+            if (island.DC != dc || island.Territory != territory)
+                continue;
+            if (IsCatalogStale(island, now))
+                continue;
+            if (!TryCycleEpoch(island, out var epoch))
+                continue;
+
+            IslandCluster? hit = null;
+            foreach (var cluster in clusters)
+            {
+                if (Math.Abs(cluster.Epoch - epoch) > InstanceAlignSeconds)
+                    continue;
+                hit = cluster;
+                break;
+            }
+
+            if (hit == null)
+            {
+                hit = new IslandCluster { Epoch = epoch };
+                clusters.Add(hit);
+            }
+
+            hit.Rows.Add(island);
+            if (island.LastUpdate >= NewestUpdate(hit))
+                hit.Epoch = epoch;
         }
 
-        if (alive)
-            return untilGone >= SameDCBufferSeconds;
-        return true;
+        if (clusters.Count == 0)
+        {
+            if (preferNorthSpawn <= 0 && preferSouthSpawn <= 0)
+                return false;
+            merged = new RemoteIslandSnapshot(dc, territory, now, preferNorthSpawn, preferSouthSpawn, 0, 0);
+            return true;
+        }
+
+        var picked = PickCluster(clusters, now, preferNorthSpawn, preferSouthSpawn);
+        if (picked == null)
+            return false;
+
+        // 现场相位对不上众包簇：只用本地，避免新旧岛对侧串台。
+        if ((preferNorthSpawn > 0 || preferSouthSpawn > 0)
+            && TryCycleEpoch(new RemoteIslandSnapshot(dc, territory, now, preferNorthSpawn, preferSouthSpawn, 0, 0), out var preferEpoch)
+            && Math.Abs(picked.Epoch - preferEpoch) > InstanceAlignSeconds)
+        {
+            merged = new RemoteIslandSnapshot(dc, territory, now, preferNorthSpawn, preferSouthSpawn, 0, 0);
+            return true;
+        }
+
+        merged = FlattenCluster(picked, dc, territory);
+        return merged.NorthSpawn > 0 || merged.SouthSpawn > 0;
     }
 
-    internal static bool TryComputeKind(
-        RemoteIslandSnapshot island,
+    /// <summary>
+    /// 进岛后核对：现场 Fate 优先；否则用大区选定的那一座岛。
+    /// </summary>
+    internal static CrowdRebindAction DecideRebind(
+        PotKind? committedKind,
+        bool northFateAlive,
+        bool southFateAlive,
+        RemoteIslandSnapshot? boundIsland,
         long now,
-        PotKind kind,
+        out PotKind kind,
         out int waitSeconds,
         out int untilGoneSeconds,
         out bool alive)
     {
-        var spawn = kind == PotKind.North ? island.NorthSpawn : island.SouthSpawn;
-        var death = kind == PotKind.North ? island.NorthDeath : island.SouthDeath;
-        alive = IsAlive(spawn, death, now);
-        if (alive)
+        kind = committedKind ?? PotKind.North;
+        waitSeconds = int.MaxValue;
+        untilGoneSeconds = 0;
+        alive = false;
+
+        if (northFateAlive || southFateAlive)
         {
+            if (northFateAlive && (!southFateAlive || committedKind == PotKind.North))
+                kind = PotKind.North;
+            else if (southFateAlive)
+                kind = PotKind.South;
+            else
+                kind = PotKind.North;
+
+            alive = true;
             waitSeconds = 0;
-            untilGoneSeconds = (int)Math.Max(0, spawn + FateAliveSeconds - now);
-            return untilGoneSeconds > 0;
+            untilGoneSeconds = FateAliveSeconds;
+            if (committedKind is { } committed && committed != kind)
+                return CrowdRebindAction.Flip;
+            return CrowdRebindAction.Confirm;
         }
 
-        if (spawn <= 0)
+        if (boundIsland is { } island
+            && TryComputeNext(island, now, out kind, out waitSeconds, out untilGoneSeconds, out alive))
         {
-            waitSeconds = int.MaxValue;
-            untilGoneSeconds = 0;
-            return false;
+            if (committedKind is { } committed && committed != kind)
+                return CrowdRebindAction.Flip;
+            return CrowdRebindAction.Confirm;
         }
 
-        var nextAt = spawn + RespawnSeconds;
-        waitSeconds = (int)Math.Max(0, nextAt - now);
-        untilGoneSeconds = waitSeconds + FateAliveSeconds;
-        return true;
+        if (committedKind.HasValue)
+        {
+            kind = committedKind.Value;
+            return CrowdRebindAction.Confirm;
+        }
+
+        return CrowdRebindAction.Abandon;
     }
+
+    private static bool IsCatalogStale(RemoteIslandSnapshot island, long now) =>
+        island.LastUpdate > 0 && now - island.LastUpdate > CatalogStaleSeconds;
 
     private static bool TryComputeCandidate(
         RemoteIslandSnapshot island,
@@ -179,12 +303,21 @@ internal static class OccultTrackerPlanner
 
         if (!excludePotKind.HasValue
             || island.Territory != excludePotTerritory
-            || islandDC != excludePotDC
-            || kind != excludePotKind.Value)
+            || islandDC != excludePotDC)
             return true;
 
-        var alternate = kind == PotKind.North ? PotKind.South : PotKind.North;
-        return TryComputeKind(island, now, alternate, out waitSeconds, out untilGoneSeconds, out alive);
+        var excluded = excludePotKind.Value;
+        if (kind != excluded)
+            return true;
+
+        var thisSpawn = alive
+            ? now - (FateAliveSeconds - untilGoneSeconds)
+            : now + waitSeconds;
+        kind = excluded == PotKind.North ? PotKind.South : PotKind.North;
+        alive = false;
+        waitSeconds = (int)Math.Max(0, thisSpawn + RespawnSeconds - now);
+        untilGoneSeconds = waitSeconds + FateAliveSeconds;
+        return waitSeconds > 0;
     }
 
     internal static bool TryComputeNext(
@@ -222,28 +355,46 @@ internal static class OccultTrackerPlanner
             return untilGoneSeconds > 0;
         }
 
-        long lastSpawn = 0;
-        var lastNorth = false;
-        if (island.NorthSpawn > 0)
-        {
-            lastSpawn = island.NorthSpawn;
-            lastNorth = true;
-        }
-
-        if (island.SouthSpawn > 0 && island.SouthSpawn >= lastSpawn)
-        {
-            lastSpawn = island.SouthSpawn;
-            lastNorth = false;
-        }
-
-        if (lastSpawn <= 0)
+        if (!TryLastSpawn(island, out var lastSpawn, out var lastNorth))
             return false;
 
-        kind = lastNorth ? PotKind.South : PotKind.North;
-        var nextAt = lastSpawn + RespawnSeconds;
-        waitSeconds = (int)Math.Max(0, nextAt - now);
-        untilGoneSeconds = waitSeconds + FateAliveSeconds;
-        return true;
+        if (now < lastSpawn)
+        {
+            kind = lastNorth ? PotKind.North : PotKind.South;
+            waitSeconds = (int)(lastSpawn - now);
+            untilGoneSeconds = waitSeconds + FateAliveSeconds;
+            return waitSeconds > 0;
+        }
+
+        var spawn = lastSpawn;
+        var isNorth = lastNorth;
+        for (var i = 0; i < 8; i++)
+        {
+            spawn += RespawnSeconds;
+            isNorth = !isNorth;
+            var death = isNorth ? island.NorthDeath : island.SouthDeath;
+            var knownDead = death > spawn && death - spawn >= 180;
+
+            if (now < spawn)
+            {
+                kind = isNorth ? PotKind.North : PotKind.South;
+                waitSeconds = (int)(spawn - now);
+                untilGoneSeconds = waitSeconds + FateAliveSeconds;
+                alive = false;
+                return true;
+            }
+
+            if (!knownDead && now < spawn + FateAliveSeconds)
+            {
+                kind = isNorth ? PotKind.North : PotKind.South;
+                waitSeconds = 0;
+                untilGoneSeconds = (int)(spawn + FateAliveSeconds - now);
+                alive = true;
+                return untilGoneSeconds > 0;
+            }
+        }
+
+        return false;
     }
 
     internal static string FormatIsland(RemoteIslandSnapshot? island, long now)
@@ -260,7 +411,9 @@ internal static class OccultTrackerPlanner
         var label = kind == PotKind.North ? "北罐" : "南罐";
         if (alive)
             return $"{label}进行中 剩{FormatMmSs(untilGone)}";
-        return wait <= 0 ? $"{label}即将刷新" : $"下个{label} {FormatMmSs(wait)}";
+        if (wait <= 0)
+            return $"{label}数据过期";
+        return $"下个{label} {FormatMmSs(wait)}";
     }
 
     internal static string FormatMmSs(int seconds)
@@ -272,11 +425,164 @@ internal static class OccultTrackerPlanner
         return $"{m:00}:{s:00}";
     }
 
+    private static IslandCluster? PickCluster(
+        List<IslandCluster> clusters,
+        long now,
+        long preferNorthSpawn,
+        long preferSouthSpawn)
+    {
+        if (TryCycleEpoch(new RemoteIslandSnapshot(default, 0, now, preferNorthSpawn, preferSouthSpawn, 0, 0), out var preferEpoch))
+        {
+            foreach (var cluster in clusters)
+            {
+                if (Math.Abs(cluster.Epoch - preferEpoch) <= InstanceAlignSeconds)
+                    return cluster;
+            }
+        }
+
+        IslandCluster? best = null;
+        var bestFresh = -1;
+        var bestUpdate = long.MinValue;
+        var bestRows = -1;
+        foreach (var cluster in clusters)
+        {
+            var fresh = CountFresh(cluster, now);
+            var update = NewestUpdate(cluster);
+            var rows = cluster.Rows.Count;
+            if (best != null)
+            {
+                if (fresh < bestFresh)
+                    continue;
+                if (fresh == bestFresh && update < bestUpdate)
+                    continue;
+                if (fresh == bestFresh && update == bestUpdate && rows <= bestRows)
+                    continue;
+            }
+
+            best = cluster;
+            bestFresh = fresh;
+            bestUpdate = update;
+            bestRows = rows;
+        }
+
+        return best;
+    }
+
+    private static RemoteIslandSnapshot FlattenCluster(IslandCluster cluster, CnDataCenterKind dc, ushort territory)
+    {
+        var newest = cluster.Rows[0];
+        foreach (var row in cluster.Rows)
+        {
+            if (row.LastUpdate > newest.LastUpdate)
+                newest = row;
+        }
+
+        if (!TryCycleEpoch(newest, out var epoch))
+            epoch = cluster.Epoch;
+
+        long northSpawn = 0;
+        long southSpawn = 0;
+        long northDeath = 0;
+        long southDeath = 0;
+        long lastUpdate = 0;
+        foreach (var row in cluster.Rows)
+        {
+            if (FitsSide(row.NorthSpawn, epoch, south: false) && row.NorthSpawn >= northSpawn)
+            {
+                northSpawn = row.NorthSpawn;
+                northDeath = row.NorthDeath;
+            }
+
+            if (FitsSide(row.SouthSpawn, epoch, south: true) && row.SouthSpawn >= southSpawn)
+            {
+                southSpawn = row.SouthSpawn;
+                southDeath = row.SouthDeath;
+            }
+
+            if (row.LastUpdate > lastUpdate)
+                lastUpdate = row.LastUpdate;
+        }
+
+        return new RemoteIslandSnapshot(dc, territory, lastUpdate, northSpawn, southSpawn, northDeath, southDeath, newest.WorldID);
+    }
+
+    private static bool TryCycleEpoch(RemoteIslandSnapshot row, out long epoch)
+    {
+        if (!TryLastSpawn(row, out var lastSpawn, out var lastNorth))
+        {
+            epoch = 0;
+            return false;
+        }
+
+        epoch = lastNorth ? lastSpawn : lastSpawn - RespawnSeconds;
+        return true;
+    }
+
+    private static bool TryLastSpawn(RemoteIslandSnapshot island, out long lastSpawn, out bool lastNorth)
+    {
+        lastSpawn = 0;
+        lastNorth = false;
+        if (island.NorthSpawn > 0)
+        {
+            lastSpawn = island.NorthSpawn;
+            lastNorth = true;
+        }
+
+        if (island.SouthSpawn > 0 && island.SouthSpawn >= lastSpawn)
+        {
+            lastSpawn = island.SouthSpawn;
+            lastNorth = false;
+        }
+
+        return lastSpawn > 0;
+    }
+
+    private static bool FitsSide(long spawn, long epoch, bool south)
+    {
+        if (spawn <= 0)
+            return false;
+        var origin = south ? epoch + RespawnSeconds : epoch;
+        var rem = ((spawn - origin) % CycleSeconds + CycleSeconds) % CycleSeconds;
+        return rem <= InstanceAlignSeconds || rem >= CycleSeconds - InstanceAlignSeconds;
+    }
+
+    private static bool IsFreshRow(RemoteIslandSnapshot row, long now)
+    {
+        if (row.LastUpdate > 0 && now - row.LastUpdate > FreshUpdateSeconds)
+            return false;
+        var last = Math.Max(row.NorthSpawn, row.SouthSpawn);
+        return last > 0 && now - last <= FreshSpawnSeconds;
+    }
+
+    private static int CountFresh(IslandCluster cluster, long now)
+    {
+        var n = 0;
+        foreach (var row in cluster.Rows)
+        {
+            if (IsFreshRow(row, now))
+                n++;
+        }
+
+        return n;
+    }
+
+    private static long NewestUpdate(IslandCluster cluster)
+    {
+        long last = 0;
+        foreach (var row in cluster.Rows)
+        {
+            if (row.LastUpdate > last)
+                last = row.LastUpdate;
+        }
+
+        return last;
+    }
+
     private static bool IsAlive(long spawn, long death, long now)
     {
         if (spawn <= 0 || spawn > now)
             return false;
-        if (death > spawn)
+        if (death > spawn && death - spawn >= 180)
             return false;
         return now < spawn + FateAliveSeconds;
     }

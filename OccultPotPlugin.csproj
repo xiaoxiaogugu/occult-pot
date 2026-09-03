@@ -4,7 +4,7 @@
     <AssemblyName>OccultPot</AssemblyName>
     <RootNamespace>OccultPot</RootNamespace>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <Version>2.0.4</Version>
+    <Version>2.1.0</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

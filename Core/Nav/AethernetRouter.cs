@@ -22,26 +22,43 @@ internal sealed record AethernetRoute(
 internal static class AethernetRouter
 {
     internal const float TeleportCost = 50f;
+    internal const float ReturnCost = 250f;
     internal const float ShardRange = 4.2f;
     internal const float CampArriveRange = 30f;
 
-    internal static AethernetRoute Decide(ushort territory, Vector3 from, Vector3 to)
+    internal static AethernetRoute Decide(ushort territory, Vector3 from, Vector3 to, bool allowReturn = true)
     {
         var shards = IslandAethernet.ForTerritory(territory);
         var walkCost = Vector3.Distance(from, to);
-        var walk = new AethernetRoute(AethernetRouteKind.Walk, null, null, walkCost, from, to);
+        var best = new AethernetRoute(AethernetRouteKind.Walk, null, null, walkCost, from, to);
         if (shards.Count == 0)
-            return walk;
+            return best;
 
+        var camp = shards.FirstOrDefault(s => s.IsCamp);
         var source = shards.OrderBy(s => Vector3.DistanceSquared(from, s.Stand)).First();
         var dest = shards.OrderBy(s => Vector3.DistanceSquared(to, s.Landing)).First();
-        if (source.Name == dest.Name)
-            return walk;
 
-        var hopCost = Vector3.Distance(from, source.Stand) + TeleportCost + Vector3.Distance(dest.Landing, to);
-        var hop = new AethernetRoute(AethernetRouteKind.WalkTeleportWalk, source, dest, hopCost, from, to);
-        return hopCost < walkCost ? hop : walk;
+        if (source.Name != dest.Name && Vector3.Distance(source.Stand, to) <= walkCost + 40f)
+        {
+            var hopCost = Vector3.Distance(from, source.Stand) + TeleportCost + Vector3.Distance(dest.Landing, to);
+            if (hopCost + 80f < walkCost)
+                best = PickCheaper(best, new AethernetRoute(AethernetRouteKind.WalkTeleportWalk, source, dest, hopCost, from, to));
+        }
+
+        if (!allowReturn || camp == null || Vector3.Distance(from, camp.Landing) <= CampArriveRange)
+            return best;
+
+        var returnWalk = ReturnCost + Vector3.Distance(camp.Landing, to);
+        best = PickCheaper(best, new AethernetRoute(AethernetRouteKind.ReturnWalk, camp, null, returnWalk, from, to));
+        if (dest.Name == camp.Name)
+            return best;
+
+        var returnHop = ReturnCost + TeleportCost + Vector3.Distance(dest.Landing, to);
+        return PickCheaper(best, new AethernetRoute(AethernetRouteKind.ReturnTeleportWalk, camp, dest, returnHop, from, to));
     }
+
+    private static AethernetRoute PickCheaper(AethernetRoute current, AethernetRoute candidate) =>
+        candidate.Cost < current.Cost ? candidate : current;
 
     internal static bool NearStand(IslandAethernetShard shard, float range = ShardRange) =>
         PlayerReader.DistanceTo(shard.Stand) <= range;
