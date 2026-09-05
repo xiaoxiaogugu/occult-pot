@@ -43,6 +43,7 @@ internal sealed class OccultCrescentPotRunner
     private const double ChestGoneSettleSeconds          = 1.0;
     private const double ContinuationElixirDelaySeconds  = 8.0;
     private const float ChestDetectRange           = 12f;
+    private const float ChestApproachRange         = 80f;
     private const float ChestOpenRange             = 5f;
 
     public OccultPotStatus Status => status;
@@ -341,7 +342,7 @@ internal sealed class OccultCrescentPotRunner
             return;
         }
 
-        var chest = hooks.NearbyPotChestPosition(ChestDetectRange);
+        var chest = hooks.NearbyPotChestPosition(ChestApproachRange);
         if (chest is { } chestPos)
         {
             sawChestObject = true;
