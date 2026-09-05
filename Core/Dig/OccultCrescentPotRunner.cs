@@ -81,6 +81,14 @@ internal sealed class OccultCrescentPotRunner
         ResetRuntime();
         startTerritory = territoryID;
         hooks.SnapshotExistingChests();
+        if (medicineAlreadyUsed || InventoryReader.GetElixirRecastRemaining() > 0.15f)
+        {
+            elixirSent   = true;
+            elixirUsedAt = hooks.NowSeconds;
+            Enter(OccultPotStatus.WaitingHint);
+            return StartResult.Ok();
+        }
+
         Enter(OccultPotStatus.WaitingMedicine);
         return StartResult.Ok();
     }
@@ -197,8 +205,12 @@ internal sealed class OccultCrescentPotRunner
     private void ApplyDirectionHint(PotChatEvent evt)
     {
         var playerPosition = hooks.PlayerPosition;
-        var chestTable     = hooks.GetChestTable(hooks.TerritoryID);
-        var filtered       = PotHintParser.FilterCandidates(playerPosition, chestTable, evt.Direction, evt.Distance);
+        var filtered       = PotHintParser.ResolveCandidates(
+            playerPosition,
+            hooks.GetChestTable(hooks.TerritoryID),
+            OccultPotChestTables.GetAll(hooks.TerritoryID),
+            evt.Direction,
+            evt.Distance);
         hintCount++;
         lastHint = FormatHint(evt);
         candidates.Clear();
@@ -232,14 +244,14 @@ internal sealed class OccultCrescentPotRunner
             sawRewardBuff = true;
         }
 
-        if (PlayerReader.IsBusy())
-            return;
+        NoteElixirAlreadyUsed(nowSeconds);
 
         // 续罐要等「能够告知第二处」；开箱动画里喝会被系统拒掉。
         if (awaitingContinuation && !continuationReady && nowSeconds - phaseStarted < ContinuationElixirDelaySeconds)
             return;
 
-        TryRepeatElixir(nowSeconds);
+        if (!PlayerReader.IsBusy())
+            TryRepeatElixir(nowSeconds);
         if (elixirUsedAt is { } usedAt && nowSeconds - usedAt >= 1.2)
         {
             awaitingContinuation = false;
@@ -295,7 +307,7 @@ internal sealed class OccultCrescentPotRunner
             if (hooks.MoveTo(position))
                 moveSent = true;
         }
-        else if (IsGreenDig && !hooks.IsNavigating() && hooks.MoveTo(position))
+        else if (!hooks.IsNavigating() && hooks.MoveTo(position))
         {
             moveSent = true;
         }
@@ -306,8 +318,7 @@ internal sealed class OccultCrescentPotRunner
 
     private void TickWaitingChestAtWaypoint(double nowSeconds)
     {
-        if (hooks.IsNavigating())
-            hooks.StopMove();
+        hooks.StopMove();
         if (hooks.HasPotChest(ChestDetectRange))
         {
             BeginOpeningIfNeeded();
@@ -316,6 +327,13 @@ internal sealed class OccultCrescentPotRunner
 
         if (!waypointElixirSent)
         {
+            if (InventoryReader.GetElixirRecastRemaining() > 0.15f)
+            {
+                waypointElixirSent = true;
+                TryNextCandidate(nowSeconds);
+                return;
+            }
+
             if (hooks.TryUseElixir())
             {
                 waypointElixirSent = true;
@@ -479,6 +497,15 @@ internal sealed class OccultCrescentPotRunner
             return false;
         MountActions.TryMount();
         return true;
+    }
+
+    private void NoteElixirAlreadyUsed(double nowSeconds)
+    {
+        if (elixirUsedAt != null || InventoryReader.GetElixirRecastRemaining() <= 0.15f)
+            return;
+
+        elixirSent   = true;
+        elixirUsedAt = nowSeconds;
     }
 
     private void TryRepeatElixir(double nowSeconds)

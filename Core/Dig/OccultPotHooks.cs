@@ -190,8 +190,11 @@ internal sealed class OccultPotHooks
 
 	internal bool IsNavigating()
 	{
+		// 只认本插件自己的路。附近有 CE 时 Bocchi 也会占 vnav，不能当成挖箱已在走。
 		if (!PreferTp)
-			return travel.IsRunning || vnav.IsRunning();
+			return travel.IsRunning;
+		if (vnav.IsRunning())
+			return false;
 		if (activeTarget is { } target)
 			return tp.IsTeleporting(target, 6f);
 		return tp.IsPending;

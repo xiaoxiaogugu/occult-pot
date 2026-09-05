@@ -74,6 +74,45 @@ internal static class PotHintParser
 		return true;
 	}
 
+	internal static IReadOnlyList<Vector3> ResolveCandidates(
+		Vector3 origin,
+		IReadOnlyList<Vector3> primary,
+		IReadOnlyList<Vector3> all,
+		CardinalDirection? direction,
+		HintDistance? distance)
+	{
+		var filtered = FilterCandidates(origin, primary, direction, distance);
+		if (filtered.Count > 0)
+			return filtered;
+
+		var pool = all.Count > 0 ? all : primary;
+		if (!ReferenceEquals(primary, pool))
+		{
+			filtered = FilterCandidates(origin, pool, direction, distance);
+			if (filtered.Count > 0)
+				return filtered;
+		}
+
+		if (distance != null)
+		{
+			filtered = FilterCandidates(origin, pool, direction, null);
+			if (filtered.Count > 0)
+				return filtered;
+		}
+
+		if (direction is { } dir)
+		{
+			for (var widen = 1; widen <= 2; widen++)
+			{
+				filtered = FilterByNearbySectors(origin, pool, dir, widen);
+				if (filtered.Count > 0)
+					return filtered;
+			}
+		}
+
+		return FilterCandidates(origin, pool, null, null);
+	}
+
 	internal static IReadOnlyList<Vector3> FilterCandidates(Vector3 origin, IReadOnlyList<Vector3> pool, CardinalDirection? direction, HintDistance? distance = null)
 	{
 		float min = 0f;
@@ -99,6 +138,39 @@ internal static class PotHintParser
 			if (dist < min || dist > max)
 				continue;
 			if (sector >= 0 && DirectionSector(delta) != sector)
+				continue;
+
+			list.Add(item);
+		}
+
+		list.Sort((a, b) =>
+		{
+			var da = new Vector2(a.X - origin.X, a.Z - origin.Z).LengthSquared();
+			var db = new Vector2(b.X - origin.X, b.Z - origin.Z).LengthSquared();
+			return da.CompareTo(db);
+		});
+		return list;
+	}
+
+	private static IReadOnlyList<Vector3> FilterByNearbySectors(
+		Vector3 origin,
+		IReadOnlyList<Vector3> pool,
+		CardinalDirection direction,
+		int widen)
+	{
+		var center = DirectionSector(direction);
+		var list   = new List<Vector3>();
+		foreach (var item in pool)
+		{
+			var delta  = new Vector2(item.X - origin.X, item.Z - origin.Z);
+			var distSq = delta.LengthSquared();
+			if (distSq < 1f)
+				continue;
+
+			var offset = Math.Abs(DirectionSector(delta) - center);
+			if (offset > 4)
+				offset = 8 - offset;
+			if (offset > widen)
 				continue;
 
 			list.Add(item);

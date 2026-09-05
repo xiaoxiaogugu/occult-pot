@@ -877,7 +877,14 @@ internal sealed class PotSessionOrchestrator
         var hop = best.DC == dc
             ? OccultTrackerPlanner.SameDCHopSeconds
             : OccultTrackerPlanner.CrossDCBufferSeconds;
-        if (localWait <= hop)
+        if (best.DC != dc
+            && OccultTrackerPlanner.TooLateToCrossDC(best.WaitSeconds, best.UntilGoneSeconds, best.Alive))
+            return false;
+
+        var bestEta = best.Alive || best.WaitSeconds == 0
+            ? hop
+            : Math.Max(best.WaitSeconds, hop);
+        if (localWait <= bestEta)
             return false;
 
         RememberSkippedIsland();
@@ -981,8 +988,8 @@ internal sealed class PotSessionOrchestrator
                 status = RuntimeStatus.Of(RuntimeStatusCode.Dig_WaitActionable);
                 return;
             }
-            InventoryReader.TryUseElixir();
-            StartDig(medicineAlreadyUsed: false);
+            var used = InventoryReader.TryUseElixir() || InventoryReader.GetElixirRecastRemaining() > 0.15f;
+            StartDig(used);
         }
     }
 
@@ -1114,6 +1121,28 @@ internal sealed class PotSessionOrchestrator
         skippedTerritory = 0;
     }
 
+    private bool ShouldSkipLateCrossDC(uint worldID, out CnDataCenterKind destDC)
+    {
+        destDC = default;
+        if (targetTerritory == 0)
+            return false;
+        if (PlayerReader.IsBusy() || PlayerReader.IsTransitionLocked())
+            return false;
+
+        var dest = CnWorldCatalog.KindForWorldID(worldID);
+        var current = CnWorldCatalog.KindForWorldID(CnWorldCatalog.CurrentWorldID)
+            ?? CnWorldCatalog.KindForDataCenterID(GameState.CurrentDataCenter);
+        if (!dest.HasValue || !current.HasValue || dest.Value == current.Value)
+            return false;
+        if (!tracker.TryGetDCIslandTiming(dest.Value, targetTerritory, out _, out var wait, out var gone, out var alive))
+            return false;
+        if (!OccultTrackerPlanner.TooLateToCrossDC(wait, gone, alive))
+            return false;
+
+        destDC = dest.Value;
+        return true;
+    }
+
     private void RememberCompletedPot()
     {
         var kind = activeLayout?.Kind ?? plannedKind;
@@ -1194,6 +1223,14 @@ internal sealed class PotSessionOrchestrator
                     }
                 }
                 BeginIslandVisit();
+                return true;
+            }
+            if (ShouldSkipLateCrossDC(worldID, out var destDC))
+            {
+                skippedDC        = destDC;
+                skippedTerritory = targetTerritory;
+                ExternalCommands.Echo("[规划] 跨大区剩余不足 3 分钟，改规划");
+                Enter(SessionPhase.PlanRoute, RuntimeStatus.Of(RuntimeStatusCode.WorldTravel_NextReplan));
                 return true;
             }
             ushort territoryID = (ushort)GameState.TerritoryType;

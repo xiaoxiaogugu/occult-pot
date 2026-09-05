@@ -39,6 +39,7 @@ internal static class OccultTrackerPlanner
     internal const int SameDCBufferSeconds = 60;
     internal const int SameDCHopSeconds = 60;
     internal const int CrossDCBufferSeconds = 300;
+    internal const int CrossDCMinRemainSeconds = 3 * 60;
     internal const int AbandonWaitSeconds = 300;
     internal const int FateAliveSeconds = 15 * 60;
     internal const long RespawnSeconds = 1800;
@@ -117,11 +118,22 @@ internal static class OccultTrackerPlanner
                     if (!TryComputeCandidate(merged, now, excludePotTerritory, excludePotKind, excludePotDC, dc, out kind, out wait, out untilGone, out alive))
                         continue;
 
-                    // 众包窗不算 Running。本岛只在窗开头留下等；过后和别处一样改等下一罐。
-                    alive = false;
-                    wait = WaitAfterCrowdWindow(wait, untilGone, onThisIsland);
-                    if (wait > 0)
-                        untilGone = wait + FateAliveSeconds;
+                    // 跨大区：窗内剩余不足 3 分钟不当这口，改等下一罐。
+                    if (!sameDC && TooLateToCrossDC(wait, untilGone, alive))
+                    {
+                        alive = false;
+                        wait = WaitAfterCrowdWindow(0, untilGone, false);
+                        if (wait > 0)
+                            untilGone = wait + FateAliveSeconds;
+                    }
+                    else
+                    {
+                        // 众包窗不算 Running。本岛只在窗开头留下等；过后和别处一样改等下一罐。
+                        alive = false;
+                        wait = WaitAfterCrowdWindow(wait, untilGone, onThisIsland);
+                        if (wait > 0)
+                            untilGone = wait + FateAliveSeconds;
+                    }
                 }
 
                 if (alive && untilGone < (onThisIsland ? SameDCBufferSeconds : travelCost))
@@ -412,6 +424,9 @@ internal static class OccultTrackerPlanner
             return $"{label}即将刷新";
         return $"下个{label} {FormatMmSs(wait)}";
     }
+
+    internal static bool TooLateToCrossDC(int wait, int untilGone, bool alive) =>
+        (alive || wait == 0) && untilGone < CrossDCMinRemainSeconds;
 
     /// <summary>
     ///     窗内但没 Running：开头两分钟 wait=0 留下；过后按下一罐算，避免钉死不换线。

@@ -64,7 +64,7 @@ if (-not (Test-Path $zip)) {
 }
 
 git add -u -- ":(exclude).cursor" ":(exclude)*.user"
-git add -- OccultPotPlugin.csproj OccultPot.json pluginmaster.json package-release.ps1 publish-github.ps1 plugins/OccultPot/latest.zip
+git add -- OccultPotPlugin.csproj OccultPot.json pluginmaster.json package-release.ps1 publish-github.ps1 publish-update.ps1 publish-ui.ps1 publish.bat plugins/OccultPot/latest.zip
 
 $staged = git diff --cached --name-only
 if (-not $staged) {

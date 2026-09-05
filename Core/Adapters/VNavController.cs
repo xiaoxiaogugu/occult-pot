@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Numerics;
 using OccultPot.Core.Game;
 using OmenTools;
@@ -36,10 +37,9 @@ internal sealed class VNavController
 				return;
 			}
 
-			if (!IsFollowing())
-				return;
-
+			// Bocchi 接 CE 时可能只在算路、还没跟路；只 Stop 正在跟随会停不掉。
 			vnavmeshIPC.StopPathfind();
+			vnavmeshIPC.CancelAllQueries();
 		}
 		catch
 		{
@@ -58,9 +58,14 @@ internal sealed class VNavController
 			LastDetail = "vnav 寻路中";
 			return true;
 		}
-		LastDetail = "vnav 寻路失败";
-		return false;
+
+		ExternalCommands.Run(MoveToCommand(destination));
+		LastDetail = "vnav 寻路中";
+		return true;
 	}
+
+	private static string MoveToCommand(Vector3 destination) =>
+		$"/vnav moveto {destination.X.ToString(CultureInfo.InvariantCulture)} {destination.Y.ToString(CultureInfo.InvariantCulture)} {destination.Z.ToString(CultureInfo.InvariantCulture)}";
 
 	internal bool PathfindTo(Vector3 destination)
 	{
